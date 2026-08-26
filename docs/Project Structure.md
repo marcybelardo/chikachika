@@ -1,0 +1,12 @@
+- Local-first GUI application
+- Limited but functional editing for overlays
+- Web server for serving working overlays
+- Using `egui`, because I think `gpui` is still to unstable to use for a project
+- Maybe using `iroh` for the data persistence, but maybe at a later time, since we don't need to share data (I think we can just use steam??? Dunno how steam works yet)
+- `v0.0.1` Vertical slice
+	- Opens the program
+	- Can create a new overlay
+	- Can put in a single widget, like maybe text
+	- Serve it over a URL
+	- Use as a browser source in OBS
+- `v0.0.2` can then make Twitch calls for data (chat, websocket events)
