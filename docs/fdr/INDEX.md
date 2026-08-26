@@ -8,5 +8,4 @@ Use [the FDR skill](../../.agents/skills/fdr/SKILL.md) to create, audit, or supe
 
 | Record | Feature | Status | Date |
 |---|---|---|---|
-
-No feature decisions have been recorded yet.
+| [FDR-001](FDR-001-overlay-editing-and-local-browser-source.md) | Overlay Editing and Local Browser Source | Accepted | 2026-08-26 |

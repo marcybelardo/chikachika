@@ -1,12 +1,5 @@
-- Local-first GUI application
-- Limited but functional editing for overlays
-- Web server for serving working overlays
-- Using `egui`, because I think `gpui` is still to unstable to use for a project
-- Maybe using `iroh` for the data persistence, but maybe at a later time, since we don't need to share data (I think we can just use steam??? Dunno how steam works yet)
-- `v0.0.1` Vertical slice
-	- Opens the program
-	- Can create a new overlay
-	- Can put in a single widget, like maybe text
-	- Serve it over a URL
-	- Use as a browser source in OBS
-- `v0.0.2` can then make Twitch calls for data (chat, websocket events)
+# Current Product Direction
+
+Chikachika is a local-first desktop application for creating and editing a focused overlay, saving it locally, and using its stable browser output as a transparent OBS browser source. The `0.0.1` vertical slice is governed by [FDR-001](fdr/FDR-001-overlay-editing-and-local-browser-source.md) and tracked in the [0.0.1 milestone](TODO-0-0-1.md).
+
+The current direction is intentionally limited to one optional text widget on a fixed canvas, local persistence, and live updates to a connected browser source. Broader integrations and richer composition remain outside this milestone.
