@@ -33,6 +33,14 @@ This file is the root context and navigation entry point for contributors and co
 | Glossary | [`.agents/skills/glossary/SKILL.md`](.agents/skills/glossary/SKILL.md) | Look up, add, rename, or audit terms |
 | Architecture inventory | [`.agents/skills/architecture-inventory/SKILL.md`](.agents/skills/architecture-inventory/SKILL.md) | Maintain current-state architecture documentation |
 
+### GitHub collaboration skills
+
+| Skill | Location | Use |
+|---|---|---|
+| GitHub triage | [`.agents/skills/github-triage/SKILL.md`](.agents/skills/github-triage/SKILL.md) | Reconcile milestone work with GitHub issues |
+| GitHub issue orchestrator | [`.agents/skills/github-issue-orchestrator/SKILL.md`](.agents/skills/github-issue-orchestrator/SKILL.md) | Turn an issue into bounded delegated work |
+| GitHub PR checklist | [`.agents/skills/github-pr-checklist/SKILL.md`](.agents/skills/github-pr-checklist/SKILL.md) | Review and prepare a ready-for-review pull request |
+
 ## Project Status
 
 The project is in pre-release implementation. The repository contains a minimal native GUI and a loopback web server with a `GET /ping` health endpoint; the next target is `0.0.1`, whose requirements and progress are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
@@ -77,7 +85,9 @@ These instructions apply to an orchestration agent coordinating subagents that m
 - After integration, run the relevant combined test and documentation checks on the coordinating branch. Report what was integrated, what was verified, and any remaining risk.
 - Remove completed worktrees and delete temporary branches only after their commits are integrated or intentionally rejected and no longer needed.
 
-## Commits
+## Commits, Issues, and Pull Requests
+
+### Commits
 
 Use Conventional Commits:
 
@@ -92,3 +102,18 @@ Use Conventional Commits:
 - Do not mark ordinary internal refactors, unreleased implementation churn, or merely large changes as breaking.
 - Use a `BREAKING CHANGE:` footer when migration details or a longer explanation are necessary.
 - Keep each commit coherent and independently understandable. Include directly related tests and documentation in the same commit.
+
+### Issues
+
+- Use or update GitHub issues only when the user asks for issue or roadmap management, or when an explicitly invoked workflow requires it.
+
+### Pull requests
+
+- Always create pull requests as full, ready-for-review pull requests. Create a draft only when the user explicitly asks for a draft.
+- PR bodies summarize the changes and link relevant FDRs, ADRs, glossary terms, and issues.
+- If a PR closes an issue, include a GitHub closing keyword such as `Closes #123.` in the body.
+- For multiline issue or PR bodies passed through `gh`, write Markdown to a file or stdin and use `--body-file`; never encode newlines as `\\n` in `--body`.
+
+### Branches
+
+- Do not rename the current branch unless explicitly stated.

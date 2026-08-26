@@ -297,7 +297,7 @@ class ProductContractTests(unittest.TestCase):
     def test_inventory_current_state_guard(self):
         inventory = (ROOT / "docs/architecture/INDEX.md").read_text(encoding="utf-8")
         self.assertIn("currently exists", inventory)
-        self.assertIn("No architecture areas", inventory)
+        self.assertIn("Native application runtime", inventory)
         self.assertNotIn("FDR-001", inventory)
 
 
@@ -499,6 +499,215 @@ class ArchitectureFoundationContractTests(unittest.TestCase):
                 errors = _check_adr_foundation(mutated_documents)
                 self.assertTrue(errors, f"removing {fixture} did not fail semantic validation")
                 self.assertTrue(any(clause in error for error in errors), errors)
+
+
+class CollaborationArtifactContractTests(unittest.TestCase):
+    def _skill(self, name):
+        return (ROOT / ".agents" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+
+    def _workflow_job(self, workflow, name):
+        lines = workflow.splitlines()
+        start = lines.index(f"  {name}:")
+        end = next((index for index in range(start + 1, len(lines)) if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[index])), len(lines))
+        return "\n".join(lines[start:end])
+
+    def _assert_skill_frontmatter(self, text):
+        lines = text.splitlines()
+        self.assertGreaterEqual(len(lines), 4)
+        self.assertEqual(lines[0], "---")
+        self.assertRegex(lines[1], r"^description:\s+\S")
+        self.assertEqual(lines[2], "---")
+
+    def _workflow_run_scripts(self, workflow):
+        lines = workflow.splitlines()
+        scripts = []
+        index = 0
+        while index < len(lines):
+            match = re.match(r"^(\s+)run:\s*(.*)$", lines[index])
+            if not match:
+                index += 1
+                continue
+            run_indent = len(match.group(1))
+            body = [match.group(2)] if match.group(2) else []
+            index += 1
+            while index < len(lines):
+                line = lines[index]
+                if line.strip() and len(line) - len(line.lstrip()) <= run_indent:
+                    break
+                body.append(line.strip())
+                index += 1
+            scripts.append("\n".join(body))
+        return scripts
+
+    def test_agents_github_collaboration_policy(self):
+        text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        heading = "## Commits, Issues, and Pull Requests"
+        self.assertEqual(text.count(heading), 1)
+        collaboration = text[text.index(heading):]
+        self.assertIn("Use or update GitHub issues only when the user asks for issue or roadmap management, or when an explicitly invoked workflow requires it.", collaboration)
+        self.assertIn("full, ready-for-review", collaboration)
+        self.assertIn("Create a draft only when the user explicitly asks for a draft.", collaboration)
+        self.assertIn("link relevant FDRs, ADRs, glossary terms, and issues", collaboration)
+        self.assertIn("GitHub closing keyword", collaboration)
+        self.assertIn("Closes #123.", collaboration)
+        self.assertIn("--body-file", collaboration)
+        self.assertIn("never encode newlines", collaboration)
+        self.assertIn("Do not rename the current branch unless explicitly stated.", collaboration)
+        navigation = text[text.index("### GitHub collaboration skills"):text.index("## Project Status")]
+        for skill in ("github-triage", "github-issue-orchestrator", "github-pr-checklist"):
+            self.assertIn(f".agents/skills/{skill}/SKILL.md", navigation)
+
+    def test_github_triage_skill_contract(self):
+        text = self._skill("github-triage")
+        self._assert_skill_frontmatter(text)
+        for clause in (
+            "explicitly invoked",
+            "docs/TODO-0-0-1.md",
+            "complete TODO",
+            "product requirements",
+            "quality requirements",
+            "explicitly out-of-scope",
+            "completion gate",
+            "current code, tests, and documentation",
+            "unchecked",
+            "existing open and relevant closed GitHub issues",
+            "gh issue list",
+            "avoid duplicates",
+            "user-visible feature work",
+            "architecture or infrastructure work",
+            "one issue per checkbox",
+            "Acceptance criteria",
+            "References",
+            "Dependencies / sequencing",
+            "gh issue create",
+            "--body-file",
+            "existing repository labels",
+            "unresolved",
+            "deferred",
+            "Do not silently mark the TODO complete",
+        ):
+            self.assertIn(clause, text, clause)
+
+    def test_github_issue_orchestrator_skill_contract(self):
+        text = self._skill("github-issue-orchestrator")
+        self._assert_skill_frontmatter(text)
+        for clause in (
+            "issue number or URL",
+            "gh issue view",
+            "--comments",
+            "metadata",
+            "AGENTS.md",
+            "docs/TODO-*.md",
+            "ADRs",
+            "FDRs",
+            "docs/GLOSSARY.md",
+            "docs/architecture/",
+            "bounded",
+            "Explicit ownership of repository paths",
+            "tests",
+            "documentation",
+            "sequential delegation",
+            "parallel delegation",
+            "dependency-aware",
+            "worktree",
+            "dedicated branch",
+            "commit",
+            "Read-only research and review",
+            "unnecessary worktrees",
+            "not create or update GitHub issues or pull requests",
+            "rename branches",
+            "broaden scope",
+            "acceptance criteria",
+            "Remaining risks",
+            "Never create a draft PR implicitly",
+        ):
+            self.assertIn(clause, text, clause)
+        self.assertNotIn("gh issue create", text)
+        self.assertNotIn("gh pr create", text)
+
+    def test_github_pr_checklist_skill_contract(self):
+        text = self._skill("github-pr-checklist")
+        self._assert_skill_frontmatter(text)
+        for clause in (
+            "complete branch diff",
+            "actionable test gaps",
+            "Add or fix tests when authorized",
+            "manual validation",
+            "AGENTS.md",
+            "docs/TODO-*.md",
+            "ADRs",
+            "FDRs",
+            "docs/GLOSSARY.md",
+            "docs/architecture/",
+            "Why / problem",
+            "What changed",
+            "Test plan and exact results",
+            "Compatibility, security, operational, and rollout implications",
+            "Link relevant FDRs, ADRs, glossary terms, architecture inventory pages",
+            "Closes #123.",
+            "gh pr create",
+            "--body-file",
+            "--draft",
+            "user explicitly requests a draft",
+            "gh pr view",
+            "Do not rename the current branch",
+            "repository rule or instruction update",
+            "only actionable findings",
+        ):
+            self.assertIn(clause, text, clause)
+
+    def test_ci_workflow_contract(self):
+        text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?m)^on:\s*$")
+        self.assertRegex(text, r"(?m)^  push:\s*$")
+        self.assertRegex(text, r"(?m)^  pull_request:\s*$")
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
+        rust = self._workflow_job(text, "rust")
+        documentation = self._workflow_job(text, "documentation")
+        self.assertIn("runs-on: ${{ matrix.os }}", rust)
+        self.assertIn("os: [ubuntu-latest, macos-latest]", rust)
+        self.assertIn("uses: actions/checkout@", rust)
+        self.assertIn("uses: dtolnay/rust-toolchain@stable", rust)
+        self.assertIn("toolchain: stable", rust)
+        self.assertIn("components: rustfmt", rust)
+        self.assertIn("cargo fmt --all -- --check", rust)
+        self.assertIn("cargo test --locked --all-targets", rust)
+        self.assertIn("if: runner.os == 'Linux'", rust)
+        for package in (
+            "libxcb-render0-dev",
+            "libxcb-shape0-dev",
+            "libxcb-xfixes0-dev",
+            "libxkbcommon-dev",
+            "libssl-dev",
+            "libgtk-3-dev",
+        ):
+            self.assertIn(package, rust)
+        self.assertLess(rust.index("uses: actions/checkout@"), rust.index("cargo fmt"))
+        self.assertLess(rust.index("uses: actions/checkout@"), rust.index("cargo test"))
+        self.assertIn("runs-on: ubuntu-latest", documentation)
+        self.assertIn("uses: actions/checkout@", documentation)
+        self.assertIn("python3 scripts/check_docs.py", documentation)
+        self.assertIn("python3 -m unittest discover -s tests -v", documentation)
+        self.assertLess(documentation.index("uses: actions/checkout@"), documentation.index("python3 scripts/check_docs.py"))
+        self.assertLess(documentation.index("uses: actions/checkout@"), documentation.index("python3 -m unittest"))
+
+    def test_setup_artifact_mutation_contract(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        prohibited_commands = r"\b(?:gh issue|gh pr|git push|git branch (?:-m|--move)|cargo publish|docker push|kubectl apply)\b"
+        for script in self._workflow_run_scripts(workflow):
+            self.assertNotRegex(script, prohibited_commands)
+        self.assertNotRegex(agents, r"(?m)^\s+run:.*" + prohibited_commands)
+        triage = self._skill("github-triage")
+        pr = self._skill("github-pr-checklist")
+        orchestrator = self._skill("github-issue-orchestrator")
+        self.assertIn("gh issue create", triage)
+        self.assertIn("explicitly invoked", triage)
+        self.assertIn("--body-file", triage)
+        self.assertIn("gh pr create", pr)
+        self.assertIn("full, ready-for-review PR", pr)
+        self.assertIn("--body-file", pr)
+        self.assertNotRegex(orchestrator, r"\bgh (?:issue|pr) (?:create|edit|close|reopen)\b")
 
 
 if __name__ == "__main__":
