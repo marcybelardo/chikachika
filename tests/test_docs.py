@@ -305,5 +305,201 @@ def re_decision(line):
     return bool(__import__("re").match(r"^###\s+\d+\.\s+.+", line))
 
 
+FOUNDATION_MANIFEST = {
+    "ADR-001": [
+        ("Decision", "eframe/egui owns the native GUI event loop on the main thread.", "remove_adr001_decision_01"),
+        ("Decision", "A dedicated server thread owns the Tokio runtime and the axum HTTP server.", "remove_adr001_decision_02"),
+        ("Decision", "The server reports its successfully bound address to the GUI before the GUI presents a usable browser-source URL.", "remove_adr001_decision_03"),
+        ("Decision", "Normal GUI shutdown signals graceful server shutdown and joins the server thread before process exit.", "remove_adr001_decision_04"),
+        ("Decision", "The dedicated server thread uses a current-thread Tokio runtime because 0.0.1 has low local concurrency.", "remove_adr001_decision_05"),
+        ("Decision", "A future change from the current-thread runtime requires a superseding ADR justified by measured needs.", "remove_adr001_decision_06"),
+        ("Decision", "Browser HTML, CSS, and JavaScript assets are compiled into the executable with standard `include_str!` and `include_bytes!` macros.", "remove_adr001_decision_07"),
+        ("Decision", "The embedded asset set stays small and does not depend on the runtime working directory.", "remove_adr001_decision_08"),
+        ("Alternatives Considered", "Separate GUI and server processes are rejected because they add IPC, lifecycle coordination, and duplicated failure surfaces for this local slice.", "remove_adr001_alternative_01"),
+        ("Alternatives Considered", "An embedded Chromium editor is rejected because it adds a heavyweight browser runtime when the native editor and browser output already have separate responsibilities.", "remove_adr001_alternative_02"),
+        ("Alternatives Considered", "Running the current-thread Tokio runtime under the GUI event loop is rejected because server work could block native event processing.", "remove_adr001_alternative_03"),
+        ("Alternatives Considered", "A heavier asset framework is rejected because the small 0.0.1 asset set needs no runtime asset packaging or discovery layer.", "remove_adr001_alternative_04"),
+    ],
+    "ADR-002": [
+        ("Decision", "There is exactly one authoritative, framework-independent domain model for an overlay document.", "remove_adr002_decision_01"),
+        ("Decision", "The egui editor and browser output are adapters or projections of that model, not independent state stores.", "remove_adr002_decision_02"),
+        ("Decision", "The domain model has no egui, axum, filesystem, or browser dependencies.", "remove_adr002_decision_03"),
+        ("Decision", "Each overlay receives one generated opaque UUID v4 identity when it is created.", "remove_adr002_decision_04"),
+        ("Decision", "The optional text widget receives one generated opaque UUID v4 identity when it is created.", "remove_adr002_decision_05"),
+        ("Decision", "Generated overlay and widget identities are created once and persisted unchanged.", "remove_adr002_decision_06"),
+        ("Decision", "Names, positions, timestamps, collection indexes, and hashes are never identity sources.", "remove_adr002_decision_07"),
+        ("Decision", "0.0.1 permits zero or one text widget and does not introduce a generic plugin or widget hierarchy.", "remove_adr002_decision_08"),
+        ("Decision", "Revisions order browser snapshots but are not identities.", "remove_adr002_decision_09"),
+        ("Decision", "UI mutations go through domain or store operations rather than directly changing adapter state.", "remove_adr002_decision_10"),
+        ("Decision", "The HTTP adapter is read-only in 0.0.1.", "remove_adr002_decision_11"),
+        ("Alternatives Considered", "Name-derived or collection-index-derived identity is rejected because renames, reordering, and edits would break durable references.", "remove_adr002_alternative_01"),
+        ("Alternatives Considered", "Separate UI and server models are rejected because duplicated state can diverge and makes live updates harder to reason about.", "remove_adr002_alternative_02"),
+        ("Alternatives Considered", "A speculative generic widget or plugin framework is rejected because 0.0.1 has one supported text widget and no plugin requirement.", "remove_adr002_alternative_03"),
+    ],
+    "ADR-003": [
+        ("Decision", "Persistence uses a strongly typed Serde JSON envelope.", "remove_adr003_decision_01"),
+        ("Decision", "The JSON envelope has an explicit top-level format version and an overlays collection.", "remove_adr003_decision_02"),
+        ("Decision", "Path resolution uses `directories::ProjectDirs` with the unqualified `Chikachika` identity and `data_local_dir`.", "remove_adr003_decision_03"),
+        ("Decision", "Exact platform-resolved paths are surfaced in implementation and documentation and are covered on macOS and Linux.", "remove_adr003_decision_04"),
+        ("Decision", "Path resolution is fallible and its failure is reported to the user.", "remove_adr003_decision_05"),
+        ("Decision", "Application-local directories are created explicitly before persistence operations.", "remove_adr003_decision_06"),
+        ("Decision", "Persistence never silently falls back to the current working directory.", "remove_adr003_decision_07"),
+        ("Decision", "Unsupported format versions and malformed data are rejected visibly and non-destructively.", "remove_adr003_decision_08"),
+        ("Decision", "A source file is never overwritten when loading it fails.", "remove_adr003_decision_09"),
+        ("Decision", "Saving clones a complete document snapshot and performs file I/O outside the model lock.", "remove_adr003_decision_10"),
+        ("Decision", "Saving writes a temporary file in the same directory as the source.", "remove_adr003_decision_11"),
+        ("Decision", "Saving replaces the source with an atomic or platform-safe replacement operation.", "remove_adr003_decision_12"),
+        ("Decision", "A failed save leaves the in-memory document dirty and exposes the save error.", "remove_adr003_decision_13"),
+        ("Decision", "When implementation versions are selected, dependency APIs and replacement guarantees are verified against those versions.", "remove_adr003_decision_14"),
+        ("Alternatives Considered", "Unversioned JSON is rejected because incompatible documents cannot be identified deliberately.", "remove_adr003_alternative_01"),
+        ("Alternatives Considered", "Opaque binary persistence is rejected because it is harder to inspect, diagnose, and evolve for this small local document.", "remove_adr003_alternative_02"),
+        ("Alternatives Considered", "Operating-system config directories for user-created overlay data are rejected because configuration and user documents have different ownership and lifecycle expectations.", "remove_adr003_alternative_03"),
+        ("Alternatives Considered", "Manually constructed home-directory paths are rejected because they bypass platform-specific app-local conventions and edge cases.", "remove_adr003_alternative_04"),
+        ("Alternatives Considered", "iroh is rejected because peer-to-peer transport is outside the local persistence requirement.", "remove_adr003_alternative_05"),
+        ("Alternatives Considered", "Steam is rejected because distribution or account services are outside the local persistence requirement.", "remove_adr003_alternative_06"),
+        ("Alternatives Considered", "Cloud synchronization is rejected because accounts, remote storage, and synchronization are outside the 0.0.1 local-first scope.", "remove_adr003_alternative_07"),
+    ],
+    "ADR-004": [
+        ("Decision", "Production binds to `127.0.0.1` only and does not expose LAN or internet interfaces in 0.0.1.", "remove_adr004_decision_01"),
+        ("Decision", "The deterministic default browser-source URL is exactly `http://127.0.0.1:51737/overlay/{overlay-id}`.", "remove_adr004_decision_02"),
+        ("Decision", "Port 51737 is in the IANA dynamic/private range and can still be occupied by another process.", "remove_adr004_decision_03"),
+        ("Decision", "An explicitly configured port may intentionally change the default port.", "remove_adr004_decision_04"),
+        ("Decision", "The selected port is persisted and documented so copied URLs remain stable.", "remove_adr004_decision_05"),
+        ("Decision", "`127.0.0.1:0` is used only by tests.", "remove_adr004_decision_06"),
+        ("Decision", "An occupied configured or default port fails visibly instead of silently changing a copied URL.", "remove_adr004_decision_07"),
+        ("Decision", "The exact same-origin routes are `GET /overlay/{id}` and `GET /overlay/{id}/events`.", "remove_adr004_decision_08"),
+        ("Decision", "`GET /overlay/{id}` serves the exact browser output.", "remove_adr004_decision_09"),
+        ("Decision", "Browser delivery uses the browser-native SSE `EventSource` API.", "remove_adr004_decision_10"),
+        ("Decision", "SSE updates use named JSON events.", "remove_adr004_decision_11"),
+        ("Decision", "A client subscribes to the events route before it receives the initial snapshot.", "remove_adr004_decision_12"),
+        ("Decision", "The server sends one complete current snapshot with a monotonically increasing revision and then sends complete replacements after mutations.", "remove_adr004_decision_13"),
+        ("Decision", "Update delivery is bounded so a slow client cannot require unbounded queued history.", "remove_adr004_decision_14"),
+        ("Decision", "A reconnect receives the current state rather than depending on historical replay.", "remove_adr004_decision_15"),
+        ("Decision", "A lagging client recovers from the latest complete snapshot.", "remove_adr004_decision_16"),
+        ("Decision", "The events stream sends periodic keepalive comments.", "remove_adr004_decision_17"),
+        ("Decision", "The server makes no promise of historical event replay.", "remove_adr004_decision_18"),
+        ("Decision", "There are no browser-to-application mutation routes.", "remove_adr004_decision_19"),
+        ("Decision", "No CORS configuration is required for same-origin assets and events.", "remove_adr004_decision_20"),
+        ("Alternatives Considered", "Production ephemeral ports are rejected because copied browser-source URLs would not remain stable.", "remove_adr004_alternative_01"),
+        ("Alternatives Considered", "Wildcard binding is rejected because 0.0.1 must not expose the local server to LAN or internet interfaces.", "remove_adr004_alternative_02"),
+        ("Alternatives Considered", "Polling is rejected because it adds repeated requests and latency where the requirement is server-pushed updates.", "remove_adr004_alternative_03"),
+        ("Alternatives Considered", "WebSockets are rejected for this one-way requirement and can be reconsidered only through a superseding ADR if bidirectional needs arise.", "remove_adr004_alternative_04"),
+    ],
+}
+
+
+ADR_FOUNDATION_PATHS = {
+    identifier: ROOT / "docs" / "adr" / {
+        "ADR-001": "ADR-001-one-native-process-gui-and-server.md",
+        "ADR-002": "ADR-002-shared-overlay-model-and-stable-ids.md",
+        "ADR-003": "ADR-003-versioned-app-local-json-persistence.md",
+        "ADR-004": "ADR-004-loopback-sse-browser-delivery.md",
+    }[identifier]
+    for identifier in FOUNDATION_MANIFEST
+}
+
+
+def _foundation_section_clauses(text, heading):
+    lines = text.splitlines()
+    try:
+        start = lines.index(heading) + 1
+    except ValueError:
+        return [], [f"missing section {heading}"]
+    end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
+    clauses = []
+    errors = []
+    for line in lines[start:end]:
+        if not line.strip():
+            continue
+        if not line.startswith("- "):
+            errors.append(f"unmanifested text in {heading}: {line}")
+        else:
+            clauses.append(line[2:].strip())
+    return clauses, errors
+
+
+def _check_adr_foundation(documents):
+    errors = []
+    manifest_ids = set(FOUNDATION_MANIFEST)
+    if manifest_ids != set(ADR_FOUNDATION_PATHS):
+        errors.append("foundation manifest and ADR path sets differ")
+    for identifier, entries in FOUNDATION_MANIFEST.items():
+        text = documents.get(identifier, "")
+        expected = [(section, clause) for section, clause, _fixture in entries]
+        actual = []
+        for section in ("Decision", "Alternatives Considered"):
+            clauses, section_errors = _foundation_section_clauses(text, f"## {section}")
+            errors.extend(f"{identifier}: {error}" for error in section_errors)
+            actual.extend((section, clause) for clause in clauses)
+        if actual != expected:
+            errors.append(f"{identifier}: Decision/Alternatives clauses do not match the explicit manifest")
+        if len(expected) != len(set(expected)):
+            errors.append(f"{identifier}: manifest contains duplicate clauses")
+        fixture_ids = [fixture for _section, _clause, fixture in entries]
+        if len(fixture_ids) != len(set(fixture_ids)):
+            errors.append(f"{identifier}: a fixture is mapped to more than one clause")
+        for section, clause, fixture in entries:
+            if actual.count((section, clause)) != 1:
+                errors.append(f"{identifier}: missing governed clause in {section}: {clause}")
+            if fixture not in FOUNDATION_MUTATION_FIXTURES:
+                errors.append(f"{identifier}: no mutation fixture for {clause}")
+    all_fixture_ids = [fixture for entries in FOUNDATION_MANIFEST.values() for _section, _clause, fixture in entries]
+    if set(FOUNDATION_MUTATION_FIXTURES) != set(all_fixture_ids):
+        errors.append("mutation fixture set does not exactly match the clause manifest")
+    return errors
+
+
+def _remove_foundation_clause(text, clause):
+    marker = f"- {clause}\n"
+    if text.count(marker) != 1:
+        raise AssertionError(f"targeted fixture could not find exactly one clause: {clause}")
+    return text.replace(marker, "", 1)
+
+
+def _build_foundation_mutation_fixtures():
+    fixtures = {}
+    for entries in FOUNDATION_MANIFEST.values():
+        for _section, clause, fixture in entries:
+            fixtures[fixture] = lambda text, clause=clause: _remove_foundation_clause(text, clause)
+    return fixtures
+
+
+FOUNDATION_MUTATION_FIXTURES = _build_foundation_mutation_fixtures()
+
+
+class ArchitectureFoundationContractTests(unittest.TestCase):
+    def _documents(self):
+        return {identifier: path.read_text(encoding="utf-8") for identifier, path in ADR_FOUNDATION_PATHS.items()}
+
+    def test_adr_foundation_set(self):
+        documents = self._documents()
+        self.assertEqual(_check_adr_foundation(documents), [])
+        for identifier, text in documents.items():
+            self.assertIn("**Status:** Accepted", text)
+            self.assertIn("**Date:** 2026-08-26", text)
+            self.assertIn("**Supersedes:** None", text)
+            self.assertEqual(text.count("FDR-001-overlay-editing-and-local-browser-source.md"), 1)
+
+    def test_adr_foundation_clause_mutations_are_targeted(self):
+        documents = self._documents()
+        manifest_entries = [
+            (identifier, section, clause, fixture)
+            for identifier, entries in FOUNDATION_MANIFEST.items()
+            for section, clause, fixture in entries
+        ]
+        self.assertEqual(len(manifest_entries), len(FOUNDATION_MUTATION_FIXTURES))
+        self.assertEqual(len({fixture for _id, _section, _clause, fixture in manifest_entries}), len(manifest_entries))
+        for identifier, section, clause, fixture in manifest_entries:
+            with self.subTest(identifier=identifier, section=section, clause=clause):
+                original = documents[identifier]
+                mutated = FOUNDATION_MUTATION_FIXTURES[fixture](original)
+                self.assertEqual(original.count(f"- {clause}\n"), mutated.count(f"- {clause}\n") + 1)
+                mutated_documents = dict(documents)
+                mutated_documents[identifier] = mutated
+                errors = _check_adr_foundation(mutated_documents)
+                self.assertTrue(errors, f"removing {fixture} did not fail semantic validation")
+                self.assertTrue(any(clause in error for error in errors), errors)
+
+
 if __name__ == "__main__":
     unittest.main()
