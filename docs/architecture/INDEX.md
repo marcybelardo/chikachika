@@ -8,5 +8,20 @@ Use [the architecture inventory skill](../../.agents/skills/architecture-invento
 
 | Area | Document | Owns |
 |---|---|---|
+| Native application runtime | [Runtime and process](#runtime-and-process) | `src/main.rs` wires the GUI and loopback server into one process. |
+| Native GUI | [Runtime and process](#runtime-and-process) | `src/gui.rs` owns the eframe application and native window lifecycle. |
+| Loopback web server | [Runtime and process](#runtime-and-process) | `src/server.rs` owns the dedicated Tokio thread, loopback listener, `/ping` route, and shutdown handle. |
 
-No architecture areas have been inventoried yet. Add pages only after corresponding architecture exists and can be verified from authoritative repository sources.
+## Runtime and process
+
+The current implementation is small enough to inventory in this index. `src/main.rs` starts `server::start()` before entering `gui::run()`, retains the `ServerHandle`, and calls its consuming `shutdown()` after the GUI exits. The GUI runs on the main thread through eframe/egui; the server runs on a dedicated current-thread Tokio runtime and binds the normal application endpoint to `127.0.0.1:51737`. The server exposes `GET /ping` as a plain-text `pong` health response and is restricted to loopback binding.
+
+Authoritative sources:
+
+- [`src/main.rs`](../../src/main.rs)
+- [`src/gui.rs`](../../src/gui.rs)
+- [`src/server.rs`](../../src/server.rs)
+- [`ADR-001`](../adr/ADR-001-one-native-process-gui-and-server.md)
+- [`ADR-004`](../adr/ADR-004-loopback-sse-browser-delivery.md)
+
+Current limitations: overlay routes, persistence, browser assets, and SSE delivery are not implemented yet.

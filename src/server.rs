@@ -5,8 +5,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tokio::sync::oneshot;
@@ -32,9 +32,15 @@ impl fmt::Display for ServerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bind(error) => write!(formatter, "could not bind the web server: {error}"),
-            Self::Runtime(error) => write!(formatter, "could not create the Tokio runtime: {error}"),
-            Self::Thread(error) => write!(formatter, "could not start the web-server thread: {error}"),
-            Self::Serve(error) => write!(formatter, "the web server stopped with an error: {error}"),
+            Self::Runtime(error) => {
+                write!(formatter, "could not create the Tokio runtime: {error}")
+            }
+            Self::Thread(error) => {
+                write!(formatter, "could not start the web-server thread: {error}")
+            }
+            Self::Serve(error) => {
+                write!(formatter, "the web server stopped with an error: {error}")
+            }
             Self::ThreadPanicked => formatter.write_str("the web-server thread panicked"),
             Self::StartupChannelClosed => {
                 formatter.write_str("the web-server thread exited before reporting its address")
