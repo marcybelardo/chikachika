@@ -1,4 +1,5 @@
 mod gui;
+pub mod model;
 mod server;
 
 use std::error::Error;
