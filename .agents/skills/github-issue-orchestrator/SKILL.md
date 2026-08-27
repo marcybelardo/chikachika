@@ -30,7 +30,7 @@ Every delegated prompt must state that the subagent must not create or update Gi
 
 ## Aggregate and verify
 
-Collect every subagent result. Review commits and diffs, reconcile conflicts, check for uncovered acceptance criteria, and integrate in dependency order on the coordinating branch. Remove completed worktrees and temporary branches only after integration or intentional rejection. Run the relevant combined checks after integration rather than assuming independent success composes.
+Collect every subagent result. Review commits and diffs, reconcile conflicts, check for uncovered acceptance criteria, and integrate in dependency order on a non-`main` coordinating branch. Do not cherry-pick implementation or documentation commits directly into `main`: push the complete coordinating branch to GitHub, create a full ready-for-review pull request, and merge through that pull request after review and required checks. Local cherry-picks are permitted only to assemble the review branch and must not bypass the GitHub pull-request boundary. Remove completed worktrees and temporary branches only after integration or intentional rejection. Run the relevant combined checks after integration rather than assuming independent success composes.
 
 Return an execution summary containing:
 

@@ -81,7 +81,8 @@ These instructions apply to an orchestration agent coordinating subagents that m
 - Establish shared models, interfaces, and consequential architecture decisions before parallelizing dependent implementations. Do not ask separate subagents to invent competing versions of the same foundation.
 - Instruct each file-modifying subagent to keep its worktree clean, make coherent Conventional Commits, include directly related tests and documentation, run proportionate verification, and report its commit hashes and exact checks.
 - Subagents must not merge, rebase, cherry-pick, or otherwise integrate their branches into the coordinating branch unless the orchestration agent explicitly delegates that operation.
-- The orchestration agent owns integration. Review each branch, integrate commits in dependency order, resolve textual and semantic conflicts centrally, and verify the combined result rather than assuming independently valid branches compose correctly.
+- The orchestration agent owns integration. Review each branch, integrate commits in dependency order on a non-`main` coordinating branch, resolve textual and semantic conflicts centrally, and verify the combined result rather than assuming independently valid branches compose correctly.
+- Do not cherry-pick implementation or documentation commits directly into `main`. Before any change reaches `main`, push the complete coordinating branch to GitHub, create a full ready-for-review pull request, and merge through that pull request after review and required checks. Local cherry-picks may assemble a review branch, but must not bypass the GitHub pull-request boundary.
 - After integration, run the relevant combined test and documentation checks on the coordinating branch. Report what was integrated, what was verified, and any remaining risk.
 - Remove completed worktrees and delete temporary branches only after their commits are integrated or intentionally rejected and no longer needed.
 

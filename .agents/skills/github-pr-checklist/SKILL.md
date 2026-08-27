@@ -28,6 +28,8 @@ Link relevant FDRs, ADRs, glossary terms, architecture inventory pages, mileston
 
 Create a full, ready-for-review PR with `gh pr create`. Use `--draft` only after the user explicitly requests a draft. For multiline Markdown, write the body to a temporary file or stdin and pass it with `--body-file`; never encode newlines as `\\n` in `--body`.
 
+A coordinating branch must be pushed and reviewed through this GitHub pull request before its implementation or documentation changes are merged into `main`. Never use a local cherry-pick or direct local merge to bypass that pull-request boundary.
+
 For example:
 
 ```bash
