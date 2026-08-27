@@ -2,12 +2,13 @@ pub mod browser;
 mod gui;
 pub mod model;
 pub mod persistence;
-mod server;
+pub mod server;
 
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let server = server::start()?;
+    let hub = server::OverlayHub::new();
+    let server = server::start_with_hub(hub)?;
     println!(
         "Chikachika web server listening at http://{}/ping",
         server.local_addr()
