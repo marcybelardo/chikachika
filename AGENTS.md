@@ -113,6 +113,7 @@ Use Conventional Commits:
 - Always create pull requests as full, ready-for-review pull requests. Create a draft only when the user explicitly asks for a draft.
 - PR bodies summarize the changes and link relevant FDRs, ADRs, glossary terms, and issues.
 - If a PR closes an issue, include a GitHub closing keyword such as `Closes #123.` in the body.
+- The operator personally reviews and merges pull requests. Agents may push branches and submit full ready-for-review PRs, but must not merge PRs, merge locally, or bypass the PR review boundary unless the operator explicitly authorizes that specific merge.
 - For multiline issue or PR bodies passed through `gh`, write Markdown to a file or stdin and use `--body-file`; never encode newlines as `\\n` in `--body`.
 
 ### Branches
