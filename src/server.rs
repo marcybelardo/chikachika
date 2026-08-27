@@ -22,13 +22,38 @@ use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tokio::sync::{oneshot, watch};
 
 use crate::browser::{self, BrowserRepresentation};
 use crate::model::{Overlay, OverlayId};
+
+#[derive(Clone)]
+struct ServerState {
+    hub: OverlayHub,
+    shutdown: watch::Receiver<bool>,
+    // The sender keeps the direct-test router's shutdown receiver open. The
+    // production handle owns the sender that actually changes this value.
+    _shutdown_signal: watch::Sender<bool>,
+    keepalive_interval: Duration,
+}
+
+impl ServerState {
+    fn new(
+        hub: OverlayHub,
+        shutdown: watch::Receiver<bool>,
+        shutdown_signal: watch::Sender<bool>,
+        keepalive_interval: Duration,
+    ) -> Self {
+        Self {
+            hub,
+            shutdown,
+            _shutdown_signal: shutdown_signal,
+            keepalive_interval,
+        }
+    }
+}
 
 /// The loopback address used by the local web server.
 pub const DEFAULT_BIND_ADDRESS: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -202,16 +227,32 @@ impl Error for HubError {}
 
 /// Builds a local web-server router backed by a fresh empty hub.
 pub fn router() -> Router {
-    router_with_hub(OverlayHub::new())
+    let (shutdown_signal, shutdown) = watch::channel(false);
+    router_with_state(ServerState::new(
+        OverlayHub::new(),
+        shutdown,
+        shutdown_signal,
+        KEEPALIVE_INTERVAL,
+    ))
 }
 
 /// Builds a local web-server router backed by `hub`.
 pub fn router_with_hub(hub: OverlayHub) -> Router {
+    let (shutdown_signal, shutdown) = watch::channel(false);
+    router_with_state(ServerState::new(
+        hub,
+        shutdown,
+        shutdown_signal,
+        KEEPALIVE_INTERVAL,
+    ))
+}
+
+fn router_with_state(state: ServerState) -> Router {
     Router::new()
         .route("/ping", get(ping))
         .route("/overlay/:id", get(render_overlay))
         .route("/overlay/:id/events", get(overlay_events))
-        .with_state(hub)
+        .with_state(state)
 }
 
 /// Starts the server on the stable default address, `127.0.0.1:51737`.
@@ -238,6 +279,8 @@ pub fn start_on_port_with_hub(port: u16, hub: OverlayHub) -> Result<ServerHandle
     let address = SocketAddr::from((DEFAULT_BIND_ADDRESS, port));
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let (stream_shutdown_sender, stream_shutdown_receiver) = watch::channel(false);
+    let stream_shutdown_handle = stream_shutdown_sender.clone();
 
     let thread = thread::Builder::new()
         .name("chikachika-web-server".to_owned())
@@ -265,12 +308,20 @@ pub fn start_on_port_with_hub(port: u16, hub: OverlayHub) -> Result<ServerHandle
                 };
 
                 let _ = ready_sender.send(Ok(local_addr));
-                axum::serve(listener, router_with_hub(hub))
-                    .with_graceful_shutdown(async move {
-                        let _ = shutdown_receiver.await;
-                    })
-                    .await
-                    .map_err(ServerError::Serve)
+                axum::serve(
+                    listener,
+                    router_with_state(ServerState::new(
+                        hub,
+                        stream_shutdown_receiver,
+                        stream_shutdown_sender.clone(),
+                        KEEPALIVE_INTERVAL,
+                    )),
+                )
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_receiver.await;
+                })
+                .await
+                .map_err(ServerError::Serve)
             })
         })
         .map_err(ServerError::Thread)?;
@@ -279,6 +330,7 @@ pub fn start_on_port_with_hub(port: u16, hub: OverlayHub) -> Result<ServerHandle
         Ok(Ok(local_addr)) => Ok(ServerHandle {
             address: local_addr,
             shutdown: Some(shutdown_sender),
+            stream_shutdown: Some(stream_shutdown_handle),
             thread: Some(thread),
         }),
         Ok(Err(error)) => {
@@ -301,6 +353,7 @@ pub fn start_on_port_with_hub(port: u16, hub: OverlayHub) -> Result<ServerHandle
 pub struct ServerHandle {
     address: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
+    stream_shutdown: Option<watch::Sender<bool>>,
     thread: Option<JoinHandle<Result<(), ServerError>>>,
 }
 
@@ -312,6 +365,9 @@ impl ServerHandle {
 
     /// Gracefully stops the server and joins its dedicated thread.
     pub fn shutdown(mut self) -> Result<(), ServerError> {
+        if let Some(stream_shutdown) = self.stream_shutdown.take() {
+            let _ = stream_shutdown.send(true);
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -328,6 +384,9 @@ impl ServerHandle {
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
+        if let Some(stream_shutdown) = self.stream_shutdown.take() {
+            let _ = stream_shutdown.send(true);
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -342,11 +401,11 @@ fn parse_id(id: &str) -> Option<OverlayId> {
     uuid::Uuid::parse_str(id).ok().map(OverlayId::from_uuid)
 }
 
-async fn render_overlay(State(hub): State<OverlayHub>, Path(id): Path<String>) -> Response {
+async fn render_overlay(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     let Some(id) = parse_id(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(Some(overlay)) = hub.snapshot(id) else {
+    let Ok(Some(overlay)) = state.hub.snapshot(id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
@@ -364,25 +423,36 @@ async fn render_overlay(State(hub): State<OverlayHub>, Path(id): Path<String>) -
         .into_response()
 }
 
-async fn overlay_events(State(hub): State<OverlayHub>, Path(id): Path<String>) -> Response {
+async fn overlay_events(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
     let Some(id) = parse_id(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(mut receiver) = hub.subscribe(id) else {
+    let Ok(mut receiver) = state.hub.subscribe(id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let mut shutdown = state.shutdown.clone();
+    let shutdown_signal = state._shutdown_signal.clone();
+    let keepalive_interval = state.keepalive_interval;
 
     let output = stream! {
+        // Keep the direct-test router's sender alive for the stream lifetime;
+        // production additionally retains the sender in ServerHandle.
+        let _shutdown_signal = shutdown_signal;
         // subscribe() and this borrow_and_update() are intentionally adjacent:
         // the receiver is registered before the first snapshot is read, so a
         // publication racing a request is either the first value or a later
         // changed() value, never an unobserved update.
-        let mut keepalive = Box::pin(tokio::time::sleep(KEEPALIVE_INTERVAL));
+        let mut keepalive = Box::pin(tokio::time::sleep(keepalive_interval));
         let first = receiver.borrow_and_update().clone();
         yield Ok::<Event, Infallible>(snapshot_event(&first));
 
         loop {
             tokio::select! {
+                shutdown_changed = shutdown.changed() => {
+                    if shutdown_changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
                 changed = receiver.changed() => {
                     if changed.is_err() {
                         break;
@@ -413,98 +483,7 @@ fn snapshot_event(snapshot: &BrowserRepresentation) -> Event {
 }
 
 fn snapshot_json(snapshot: &BrowserRepresentation) -> String {
-    serde_json::to_string(&BrowserWire::from(snapshot)).expect("browser wire snapshot serializes")
-}
-
-#[derive(Serialize)]
-struct BrowserWire {
-    canvas: CanvasWire,
-    overlay_id: String,
-    revision: u64,
-    text_widget: Option<TextWidgetWire>,
-}
-
-impl From<&BrowserRepresentation> for BrowserWire {
-    fn from(snapshot: &BrowserRepresentation) -> Self {
-        Self {
-            canvas: CanvasWire {
-                width: snapshot.canvas().width(),
-                height: snapshot.canvas().height(),
-            },
-            overlay_id: snapshot.overlay_id().to_owned(),
-            revision: snapshot.revision(),
-            text_widget: snapshot.text_widget().map(TextWidgetWire::from),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct CanvasWire {
-    width: u32,
-    height: u32,
-}
-
-#[derive(Serialize)]
-struct TextWidgetWire {
-    widget_id: String,
-    content: String,
-    position: PositionWire,
-    font_size: f32,
-    color: ColorWire,
-    alignment: WireAlignment,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WireAlignment {
-    Left,
-    Center,
-    Right,
-}
-
-impl From<browser::BrowserAlignment> for WireAlignment {
-    fn from(alignment: browser::BrowserAlignment) -> Self {
-        match alignment {
-            browser::BrowserAlignment::Left => Self::Left,
-            browser::BrowserAlignment::Center => Self::Center,
-            browser::BrowserAlignment::Right => Self::Right,
-        }
-    }
-}
-
-impl From<&browser::BrowserTextWidget> for TextWidgetWire {
-    fn from(widget: &browser::BrowserTextWidget) -> Self {
-        Self {
-            widget_id: widget.widget_id().to_owned(),
-            content: widget.content().to_owned(),
-            position: PositionWire {
-                x: widget.position().x(),
-                y: widget.position().y(),
-            },
-            font_size: widget.font_size(),
-            color: ColorWire {
-                red: widget.color().red(),
-                green: widget.color().green(),
-                blue: widget.color().blue(),
-                alpha: widget.color().alpha(),
-            },
-            alignment: widget.alignment().into(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct PositionWire {
-    x: f32,
-    y: f32,
-}
-
-#[derive(Serialize)]
-struct ColorWire {
-    red: u8,
-    green: u8,
-    blue: u8,
-    alpha: u8,
+    serde_json::to_string(snapshot).expect("browser snapshot serializes")
 }
 
 /// Errors reported while starting or stopping the local web server.
@@ -556,7 +535,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, header};
     use http_body_util::BodyExt;
-    use std::sync::{Arc, Barrier};
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::sync::{Arc, Barrier, mpsc};
     use std::time::Duration;
     use tower::ServiceExt;
 
@@ -934,6 +915,50 @@ mod tests {
         hub.publish(&latest).expect("bounded update");
         let next = next_frame(&mut body).await.expect("bounded next frame");
         assert_eq!(event_snapshot(&next)["revision"], 1);
+    }
+
+    #[test]
+    fn shutdown_closes_active_sse_stream_and_releases_port() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial).expect("register overlay");
+        let server = start_on_port_with_hub(0, hub).expect("start test server");
+        let address = server.local_addr();
+        let mut stream = TcpStream::connect(address).expect("connect to SSE route");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set SSE read timeout");
+        write!(
+            stream,
+            "GET /overlay/{id}/events HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .expect("send SSE request");
+
+        let mut response = Vec::new();
+        while !response.windows(4).any(|window| window == b"\r\n\r\n") {
+            let mut buffer = [0_u8; 256];
+            let read = stream.read(&mut buffer).expect("read SSE headers");
+            assert_ne!(read, 0, "SSE server closed before sending headers");
+            response.extend_from_slice(&buffer[..read]);
+        }
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        // The 200 response headers prove the long-lived SSE request is active;
+        // initial event framing is covered by the direct-router tests above.
+        let (shutdown_sender, shutdown_receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            shutdown_sender
+                .send(server.shutdown())
+                .expect("report server shutdown result");
+        });
+        let result = shutdown_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server shutdown did not finish with active SSE stream")
+            .expect("server shuts down with active SSE stream");
+        assert_eq!(result, ());
+
+        let rebound = start_on_port(address.port()).expect("released port can be rebound");
+        rebound.shutdown().expect("stop rebound server");
     }
 
     #[test]

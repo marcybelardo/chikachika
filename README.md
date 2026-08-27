@@ -1,6 +1,6 @@
 # Chikachika
 
-Chikachika is a pre-release local-first desktop application for creating and using overlays. The current repository contains the initial native GUI and loopback health-server slice, a framework-independent overlay model, local persistence and an embedded browser renderer. The overlay editor and browser-source hosting workflow are not implemented yet.
+Chikachika is a pre-release local-first desktop application for creating and using overlays. The current repository contains the initial native GUI and loopback server, a framework-independent overlay model, local persistence, an embedded browser renderer, and in-memory per-overlay HTTP/SSE hosting infrastructure. The native overlay editor and user-facing browser-source workflow are not implemented yet.
 
 ## Status
 
@@ -19,9 +19,11 @@ Implemented in the current baseline:
 Not implemented yet:
 
 - Overlay creation, editing, or management in the native GUI.
-- Browser-source overlay HTTP routes, stable URL controls, or live SSE updates.
-- Stable overlay URLs exposed by the running application. The current server has only the health endpoint; do not configure an OBS Browser Source from this baseline.
+- Native-GUI overlay lifecycle or text editing.
+- User-facing stable URL controls, such as copy/open actions, or a GUI workflow that registers overlays with the running server.
 - OBS connection instructions or end-to-end OBS verification on macOS and Linux.
+
+The server-side hosting infrastructure is implemented for registered overlays: it provides stable `/overlay/{overlay-id}` HTML routes and bounded `/overlay/{overlay-id}/events` SSE snapshots. The current readiness GUI does not yet create or register overlays, so no usable overlay URL is exposed by the application run.
 - Idle CPU or memory measurements for a representative release/development build.
 
 The intended product scope and completion requirements are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md). Planned behavior should not be read as implemented behavior. See the [current architecture inventory](docs/architecture/INDEX.md) for the implemented component boundaries and limitations.
@@ -35,7 +37,15 @@ The intended product scope and completion requirements are tracked in [`docs/TOD
    rustup default stable
    ```
 
-2. Clone the repository and enter it:
+2. Install Node.js 22 or newer for the executable embedded-browser test:
+
+   ```sh
+   node --version
+   ```
+
+   The test suite requires Node.js 22.
+
+3. Clone the repository and enter it:
 
    ```sh
    git clone https://github.com/marcybelardo/chikachika.git
@@ -61,7 +71,7 @@ Start the native application from the repository root:
 cargo run
 ```
 
-The application starts the web server before opening the GUI and prints its address, normally:
+The application starts the web server before opening the GUI and prints its health address, normally:
 
 ```text
 Chikachika web server listening at http://127.0.0.1:51737/ping
@@ -79,7 +89,7 @@ The expected response is:
 pong
 ```
 
-There are no overlay or OBS URLs to use yet. Closing the GUI shuts down the local server.
+The current GUI does not create overlays or expose browser-source URLs yet. Closing the GUI shuts down the local server.
 
 ## Test and checks
 
@@ -88,15 +98,16 @@ Run the same checks used by CI from the repository root:
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --all-targets
+node --test tests/browser_overlay.test.mjs
 python3 scripts/check_docs.py
 python3 -m unittest discover -s tests -v
 ```
 
-The Rust job runs formatting and locked all-target tests on Ubuntu and macOS. The documentation job validates decision-record indexes and links, then runs the Python test suite. For a quick Rust-only test run, `cargo test` is also supported, but the locked all-target command above is the CI-equivalent check.
+The Rust job runs formatting and locked all-target tests on Ubuntu and macOS. The documentation job runs the Node embedded-client test, validates decision-record indexes and links, and runs the Python test suite. For a quick Rust-only test run, `cargo test` is also supported, but the locked all-target command above is the CI-equivalent check.
 
 ## Current architecture
 
-The application is one native process. `src/main.rs` starts the loopback server, then runs the eframe/egui GUI; when the GUI exits, it shuts down the server. The framework-independent model in `src/model.rs` is the authoritative overlay document. The persistence adapter in `src/persistence.rs` stores versioned JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a self-contained transparent HTML document with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and currently exposes only `GET /ping`; it does not yet host the browser renderer. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
+The application is one native process. `src/main.rs` creates an `OverlayHub`, starts the loopback server with that shared state, then runs the eframe/egui GUI; when the GUI exits, it signals the server and shuts down its dedicated thread. The framework-independent model in `src/model.rs` is the authoritative overlay document. The persistence adapter in `src/persistence.rs` stores versioned JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a serializable complete browser snapshot and self-contained transparent HTML with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and exposes `GET /ping`, registered-overlay HTML at `GET /overlay/{id}`, and bounded named-SSE snapshots at `GET /overlay/{id}/events`. The current readiness GUI does not yet create/register overlays or expose their URLs. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
 
 ## Pending documentation and validation
 

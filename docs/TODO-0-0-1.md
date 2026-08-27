@@ -39,13 +39,13 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ### Browser-source hosting
 
-- [ ] The application serves each overlay at its stable local URL.
-- [ ] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
-- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh.
+- [ ] The application serves each overlay at its stable local URL. *(The server route exists for registered overlays; the GUI does not yet create/register overlays or expose URLs.)*
+- [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
+- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(The bounded SSE transport and client exist; the editor does not yet publish mutations.)*
 - [ ] The application provides a straightforward way to copy the browser-source URL.
 - [ ] The application provides a straightforward way to open the exact browser output for preview or troubleshooting.
-- [ ] Server startup and port conflicts are visible and non-destructive.
-- [ ] The local server binds only to the loopback interface by default.
+- [x] Server startup and port conflicts are visible and non-destructive.
+- [x] The local server binds only to the loopback interface by default.
 
 ### OBS verification
 
@@ -58,7 +58,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 ## Quality Requirements
 
 - [ ] Automated tests cover the persisted overlay model and its round-trip behavior.
-- [ ] Automated tests cover the browser representation or update protocol where practical.
+- [x] Automated tests cover the browser representation or update protocol where practical.
 - [ ] The application handles malformed or unsupported persisted data without silently losing user data.
 - [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
 - [ ] Setup, run, test, and OBS connection instructions are documented.

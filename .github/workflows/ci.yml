@@ -40,6 +40,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run embedded browser client tests
+        run: node --test tests/browser_overlay.test.mjs
       - name: Validate documentation
         run: python3 scripts/check_docs.py
       - name: Run Python tests
