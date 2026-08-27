@@ -1,4 +1,7 @@
+pub mod browser;
 mod gui;
+pub mod model;
+pub mod persistence;
 mod server;
 
 use std::error::Error;

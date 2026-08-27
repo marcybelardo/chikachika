@@ -1,0 +1,30 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+body {
+  color: transparent;
+}
+
+#chikachika-canvas {
+  position: relative;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+.chikachika-text {
+  position: absolute;
+  display: block;
+  right: 0;
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  transform-origin: top left;
+}

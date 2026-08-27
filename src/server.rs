@@ -207,6 +207,53 @@ mod tests {
     }
 
     #[test]
+    fn test_server_uses_ephemeral_loopback_port() {
+        let server = start_on_port(0).expect("start test server");
+        let address = server.local_addr();
+        let shutdown = server.shutdown();
+
+        assert_eq!(address.ip(), DEFAULT_BIND_ADDRESS);
+        assert_ne!(address.port(), 0);
+        shutdown.expect("stop test server");
+    }
+
+    #[test]
+    fn configured_port_conflict_is_visible_and_non_destructive() {
+        let server = start_on_port(0).expect("start test server");
+        let address = server.local_addr();
+
+        match start_on_port(address.port()) {
+            Err(ServerError::Bind(error)) => {
+                assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+            }
+            Err(error) => panic!("expected bind conflict, got {error}"),
+            Ok(conflicting_server) => {
+                let _ = conflicting_server.shutdown();
+                panic!("expected second server startup to fail");
+            }
+        }
+
+        let response = request(address, "/ping");
+        let shutdown = server.shutdown();
+
+        assert!(response.contains("HTTP/1.1 200 OK\r\n"));
+        assert_eq!(response.split("\r\n\r\n").nth(1), Some("pong"));
+        shutdown.expect("stop test server");
+    }
+
+    #[test]
+    fn shutdown_releases_configured_port() {
+        let server = start_on_port(0).expect("start test server");
+        let port = server.local_addr().port();
+        server.shutdown().expect("stop test server");
+
+        let restarted_server = start_on_port(port).expect("restart test server on released port");
+        restarted_server
+            .shutdown()
+            .expect("stop restarted test server");
+    }
+
+    #[test]
     fn ping_returns_pong() {
         let server = start_on_port(0).expect("start test server");
         let response = request(server.local_addr(), "/ping");
