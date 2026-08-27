@@ -12,15 +12,20 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ## Product Requirements
 
-### Application and overlay management
+### Application and overlay management (issue #4)
 
-- [ ] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux.
-- [ ] A user can create an overlay.
-- [ ] A user can rename an overlay.
-- [ ] A user can delete an overlay only after explicit confirmation.
-- [ ] Each overlay has a stable identity and browser-source URL that survive renaming and application restarts.
+- [ ] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux. *(Target-platform validation remains pending.)*
+- [x] Startup restores and validates the complete versioned app-local overlay snapshot before presenting a usable workspace; a missing store starts an empty collection.
+- [x] Malformed or unsupported saved data blocks restoration without replacing the source file, and the failure remains visible and non-destructive.
+- [x] The workspace lists and selects overlays while preserving stable selection state independently of dirty/save state.
+- [x] A user can create an overlay, which becomes selected and dirty until successfully saved.
+- [x] A user can rename an overlay without changing its stable identity or browser-source URL.
+- [x] A user can delete an overlay only after explicit confirmation; selection moves to an unaffected remaining overlay when applicable.
+- [x] The workspace owns one shared application overlay collection and publishes registered changes through the existing model and hosting hub rather than maintaining duplicate document state.
+- [x] The application presents a usable browser-source URL only after server readiness is known and an overlay is selected and registered.
+- [x] Server startup, persistence, and shutdown errors remain visible and non-destructive; normal shutdown coordinates with the server thread.
 
-### Canvas and text editing
+### Canvas and text editing (issue #5, pending)
 
 - [ ] An overlay uses an explicitly configured fixed-size canvas.
 - [ ] An overlay supports exactly zero or one optional text widget; multiple widgets are deferred.
@@ -30,20 +35,23 @@ A streamer can create a basic text overlay in the desktop application, save it l
 - [ ] The editor provides a useful visual preview, while the browser output is authoritative.
 - [ ] Layering, canvas resizing, rich text, and animation are deferred beyond 0.0.1.
 
-### Local persistence
+### Local persistence (issue #4 integration)
 
-- [ ] Overlays and their supported settings are saved locally.
-- [ ] Saved overlays are restored after restarting the application.
-- [ ] Persisted data has an explicit format version so incompatible pre-release changes can be detected and handled deliberately.
-- [ ] Malformed or unsupported data and persistence errors are visible and non-destructive.
+- [x] Overlays and their supported settings are saved locally as one complete versioned snapshot.
+- [x] A successful save clears dirty state.
+- [x] A failed save preserves the prior source file, keeps the in-memory change and dirty state, and displays a recoverable error.
+- [x] Saved overlays are restored after restarting the application.
+- [x] Persisted data has an explicit format version so incompatible pre-release changes can be detected and handled deliberately.
+- [x] Malformed or unsupported data and persistence errors are visible and non-destructive.
 
 ### Browser-source hosting
 
-- [ ] The application serves each overlay at its stable local URL. *(The server route exists for registered overlays; the GUI does not yet create/register overlays or expose URLs.)*
+- [x] The application serves each overlay at its stable local URL after the issue #4 workspace registers it. *(The server route and workspace registration are implemented.)*
 - [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
-- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(The bounded SSE transport and client exist; the editor does not yet publish mutations.)*
-- [ ] The application provides a straightforward way to copy the browser-source URL.
-- [ ] The application provides a straightforward way to open the exact browser output for preview or troubleshooting.
+- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(The bounded SSE transport and client exist; editor publication depends on issue #5.)*
+- [ ] The application provides a straightforward way to copy the browser-source URL (**issue #8, pending**).
+- [ ] The application provides a straightforward way to open the exact browser output for preview or troubleshooting (**issue #8, pending**).
+- [ ] Configurable-port UX is provided and documented (**issue #8, pending**); the default remains loopback `127.0.0.1:51737`.
 - [x] Server startup and port conflicts are visible and non-destructive.
 - [x] The local server binds only to the loopback interface by default.
 
