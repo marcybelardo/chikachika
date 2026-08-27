@@ -1,15 +1,34 @@
+//! Loopback HTTP hosting and bounded browser snapshot delivery.
+//!
+//! [`OverlayHub`] is the single in-memory publication point shared by the
+//! editor and HTTP adapters. It stores the authoritative model and its current
+//! browser projection together, while each subscriber receives only the latest
+//! value through a bounded Tokio watch channel.
+
+use std::collections::HashMap;
+use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
+use async_stream::stream;
 use axum::Router;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
+
+use crate::browser::{self, BrowserRepresentation};
+use crate::model::{Overlay, OverlayId};
 
 /// The loopback address used by the local web server.
 pub const DEFAULT_BIND_ADDRESS: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -17,46 +36,260 @@ pub const DEFAULT_BIND_ADDRESS: Ipv4Addr = Ipv4Addr::LOCALHOST;
 /// The stable port used by the normal application run.
 pub const DEFAULT_PORT: u16 = 51737;
 
-/// Errors reported while starting or stopping the local web server.
-#[derive(Debug)]
-pub enum ServerError {
-    Bind(io::Error),
-    Runtime(io::Error),
-    Thread(io::Error),
-    Serve(io::Error),
-    ThreadPanicked,
-    StartupChannelClosed,
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+struct OverlayEntry {
+    overlay: Overlay,
+    sender: watch::Sender<BrowserRepresentation>,
 }
 
-impl fmt::Display for ServerError {
+/// Synchronous shared state for current overlays and browser subscribers.
+///
+/// The map lock is held only for map and channel operations. Projection and
+/// HTML/JSON rendering happen before or after that lock, and a stream never
+/// retains a map guard for its lifetime.
+#[derive(Clone, Default)]
+pub struct OverlayHub {
+    entries: Arc<Mutex<HashMap<OverlayId, OverlayEntry>>>,
+}
+
+impl OverlayHub {
+    /// Creates an empty hub.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers an overlay and seeds its current browser projection.
+    pub fn register(&self, overlay: Overlay) -> Result<(), HubError> {
+        let id = overlay.id();
+        let representation = browser::project(&overlay);
+        let mut entries = self.lock_entries()?;
+        if entries.contains_key(&id) {
+            return Err(HubError::Duplicate { id });
+        }
+
+        let (sender, _receiver) = watch::channel(representation);
+        entries.insert(id, OverlayEntry { overlay, sender });
+        Ok(())
+    }
+
+    /// Publishes a replacement with a strictly newer revision.
+    ///
+    /// Equal revisions are accepted only when the complete model is identical;
+    /// equal but different models are conflicts, and older revisions are stale.
+    pub fn publish(&self, overlay: &Overlay) -> Result<PublishResult, HubError> {
+        let id = overlay.id();
+        // Rendering has no map guard. The resulting value is still compared and
+        // published while holding the same guard as the model replacement.
+        let representation = browser::project(overlay);
+        let mut entries = self.lock_entries()?;
+        let entry = entries.get_mut(&id).ok_or(HubError::Unknown { id })?;
+
+        match overlay.revision().cmp(&entry.overlay.revision()) {
+            std::cmp::Ordering::Greater => {
+                entry.overlay = overlay.clone();
+                entry.sender.send_replace(representation);
+                Ok(PublishResult::Published)
+            }
+            std::cmp::Ordering::Equal if overlay == &entry.overlay => Ok(PublishResult::Unchanged),
+            std::cmp::Ordering::Equal => Err(HubError::Conflict {
+                id,
+                revision: overlay.revision(),
+            }),
+            std::cmp::Ordering::Less => Err(HubError::Stale {
+                id,
+                current_revision: entry.overlay.revision(),
+                incoming_revision: overlay.revision(),
+            }),
+        }
+    }
+
+    /// Removes an overlay, closing all streams subscribed to its sender.
+    pub fn remove(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+        let removed = {
+            let mut entries = self.lock_entries()?;
+            entries
+                .remove(&id)
+                .map(|entry| (entry.overlay, entry.sender))
+        };
+
+        Ok(removed.map(|(overlay, sender)| {
+            // Explicitly drop the sender after the map guard is gone. Receivers
+            // observe closure and no lock is held while they finish.
+            drop(sender);
+            overlay
+        }))
+    }
+
+    /// Returns a cloned current model snapshot, if the ID is registered.
+    pub fn snapshot(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+        let entries = self.lock_entries()?;
+        Ok(entries.get(&id).map(|entry| entry.overlay.clone()))
+    }
+
+    /// Returns a receiver seeded with the current projection, if registered.
+    pub fn subscribe(
+        &self,
+        id: OverlayId,
+    ) -> Result<watch::Receiver<BrowserRepresentation>, HubError> {
+        let entries = self.lock_entries()?;
+        entries
+            .get(&id)
+            .map(|entry| entry.sender.subscribe())
+            .ok_or(HubError::Unknown { id })
+    }
+
+    fn lock_entries(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<OverlayId, OverlayEntry>>, HubError> {
+        self.entries.lock().map_err(|_| HubError::LockPoisoned)
+    }
+}
+
+/// Outcome of a revision-checked publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishResult {
+    Published,
+    Unchanged,
+}
+
+/// Errors from synchronous hub operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HubError {
+    Duplicate {
+        id: OverlayId,
+    },
+    Unknown {
+        id: OverlayId,
+    },
+    Stale {
+        id: OverlayId,
+        current_revision: u64,
+        incoming_revision: u64,
+    },
+    Conflict {
+        id: OverlayId,
+        revision: u64,
+    },
+    LockPoisoned,
+}
+
+impl fmt::Display for HubError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Bind(error) => write!(formatter, "could not bind the web server: {error}"),
-            Self::Runtime(error) => {
-                write!(formatter, "could not create the Tokio runtime: {error}")
+            Self::Duplicate { id } => write!(formatter, "overlay {id} is already registered"),
+            Self::Unknown { id } => write!(formatter, "overlay {id} is not registered"),
+            Self::Stale {
+                id,
+                current_revision,
+                incoming_revision,
+            } => write!(
+                formatter,
+                "overlay {id} revision {incoming_revision} is stale; current revision is {current_revision}"
+            ),
+            Self::Conflict { id, revision } => {
+                write!(
+                    formatter,
+                    "overlay {id} has a conflicting revision {revision}"
+                )
             }
-            Self::Thread(error) => {
-                write!(formatter, "could not start the web-server thread: {error}")
-            }
-            Self::Serve(error) => {
-                write!(formatter, "the web server stopped with an error: {error}")
-            }
-            Self::ThreadPanicked => formatter.write_str("the web-server thread panicked"),
-            Self::StartupChannelClosed => {
-                formatter.write_str("the web-server thread exited before reporting its address")
-            }
+            Self::LockPoisoned => formatter.write_str("overlay hub lock is poisoned"),
         }
     }
 }
 
-impl Error for ServerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Bind(error) | Self::Runtime(error) | Self::Thread(error) | Self::Serve(error) => {
-                Some(error)
-            }
-            Self::ThreadPanicked | Self::StartupChannelClosed => None,
+impl Error for HubError {}
+
+/// Builds a local web-server router backed by a fresh empty hub.
+pub fn router() -> Router {
+    router_with_hub(OverlayHub::new())
+}
+
+/// Builds a local web-server router backed by `hub`.
+pub fn router_with_hub(hub: OverlayHub) -> Router {
+    Router::new()
+        .route("/ping", get(ping))
+        .route("/overlay/:id", get(render_overlay))
+        .route("/overlay/:id/events", get(overlay_events))
+        .with_state(hub)
+}
+
+/// Starts the server on the stable default address, `127.0.0.1:51737`.
+pub fn start() -> Result<ServerHandle, ServerError> {
+    start_with_hub(OverlayHub::new())
+}
+
+/// Starts the server on the stable default address with shared application state.
+pub fn start_with_hub(hub: OverlayHub) -> Result<ServerHandle, ServerError> {
+    start_on_port_with_hub(DEFAULT_PORT, hub)
+}
+
+/// Starts the server on a loopback port in a dedicated thread.
+///
+/// Port `0` is useful for tests and asks the operating system to select an
+/// available ephemeral port. Normal application startup should use [`start`]
+/// so copied browser-source URLs remain stable.
+pub fn start_on_port(port: u16) -> Result<ServerHandle, ServerError> {
+    start_on_port_with_hub(port, OverlayHub::new())
+}
+
+/// Starts the server on a loopback port with the supplied shared hub.
+pub fn start_on_port_with_hub(port: u16, hub: OverlayHub) -> Result<ServerHandle, ServerError> {
+    let address = SocketAddr::from((DEFAULT_BIND_ADDRESS, port));
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+
+    let thread = thread::Builder::new()
+        .name("chikachika-web-server".to_owned())
+        .spawn(move || {
+            let runtime = Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .map_err(ServerError::Runtime)?;
+
+            runtime.block_on(async move {
+                let listener = match TcpListener::bind(address).await {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(ServerError::Bind(error)));
+                        return Ok(());
+                    }
+                };
+                let local_addr = match listener.local_addr() {
+                    Ok(local_addr) => local_addr,
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(ServerError::Bind(error)));
+                        return Ok(());
+                    }
+                };
+
+                let _ = ready_sender.send(Ok(local_addr));
+                axum::serve(listener, router_with_hub(hub))
+                    .with_graceful_shutdown(async move {
+                        let _ = shutdown_receiver.await;
+                    })
+                    .await
+                    .map_err(ServerError::Serve)
+            })
+        })
+        .map_err(ServerError::Thread)?;
+
+    match ready_receiver.recv() {
+        Ok(Ok(local_addr)) => Ok(ServerHandle {
+            address: local_addr,
+            shutdown: Some(shutdown_sender),
+            thread: Some(thread),
+        }),
+        Ok(Err(error)) => {
+            let _ = thread.join();
+            Err(error)
         }
+        Err(_) => match thread.join() {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) => Err(ServerError::StartupChannelClosed),
+            Err(_) => Err(ServerError::ThreadPanicked),
+        },
     }
 }
 
@@ -101,109 +334,606 @@ impl Drop for ServerHandle {
     }
 }
 
-/// Builds the local web-server router.
-///
-/// The router is kept separate from startup so it can be reused by callers
-/// that own their Tokio runtime or listener.
-pub fn router() -> Router {
-    Router::new().route("/ping", get(ping))
+async fn ping() -> &'static str {
+    "pong"
 }
 
-/// Starts the server on the stable default address, `127.0.0.1:51737`.
-pub fn start() -> Result<ServerHandle, ServerError> {
-    start_on_port(DEFAULT_PORT)
+fn parse_id(id: &str) -> Option<OverlayId> {
+    uuid::Uuid::parse_str(id).ok().map(OverlayId::from_uuid)
 }
 
-/// Starts the server on a loopback port in a dedicated thread.
-///
-/// Port `0` is useful for tests and asks the operating system to select an
-/// available ephemeral port. Normal application startup should use [`start`]
-/// so copied browser-source URLs remain stable.
-pub fn start_on_port(port: u16) -> Result<ServerHandle, ServerError> {
-    let address = SocketAddr::from((DEFAULT_BIND_ADDRESS, port));
-    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+async fn render_overlay(State(hub): State<OverlayHub>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(Some(overlay)) = hub.snapshot(id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
 
-    let thread = thread::Builder::new()
-        .name("chikachika-web-server".to_owned())
-        .spawn(move || {
-            let runtime = Builder::new_current_thread()
-                .enable_io()
-                .build()
-                .map_err(ServerError::Runtime)?;
+    let body = browser::render(&overlay);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::PRAGMA, "no-cache"),
+            (header::EXPIRES, "0"),
+        ],
+        body,
+    )
+        .into_response()
+}
 
-            runtime.block_on(async move {
-                let listener = match TcpListener::bind(address).await {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        let _ = ready_sender.send(Err(ServerError::Bind(error)));
-                        return Ok(());
+async fn overlay_events(State(hub): State<OverlayHub>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(mut receiver) = hub.subscribe(id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let output = stream! {
+        // subscribe() and this borrow_and_update() are intentionally adjacent:
+        // the receiver is registered before the first snapshot is read, so a
+        // publication racing a request is either the first value or a later
+        // changed() value, never an unobserved update.
+        let mut keepalive = Box::pin(tokio::time::sleep(KEEPALIVE_INTERVAL));
+        let first = receiver.borrow_and_update().clone();
+        yield Ok::<Event, Infallible>(snapshot_event(&first));
+
+        loop {
+            tokio::select! {
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        break;
                     }
-                };
-                let local_addr = match listener.local_addr() {
-                    Ok(local_addr) => local_addr,
-                    Err(error) => {
-                        let _ = ready_sender.send(Err(ServerError::Bind(error)));
-                        return Ok(());
-                    }
-                };
-
-                let _ = ready_sender.send(Ok(local_addr));
-                axum::serve(listener, router())
-                    .with_graceful_shutdown(async move {
-                        let _ = shutdown_receiver.await;
-                    })
-                    .await
-                    .map_err(ServerError::Serve)
-            })
-        })
-        .map_err(ServerError::Thread)?;
-
-    match ready_receiver.recv() {
-        Ok(Ok(local_addr)) => Ok(ServerHandle {
-            address: local_addr,
-            shutdown: Some(shutdown_sender),
-            thread: Some(thread),
-        }),
-        Ok(Err(error)) => {
-            let _ = thread.join();
-            Err(error)
+                    let snapshot = receiver.borrow_and_update().clone();
+                    yield Ok(snapshot_event(&snapshot));
+                }
+                _ = &mut keepalive => {
+                    yield Ok(Event::default().comment("keepalive"));
+                    keepalive.as_mut().reset(tokio::time::Instant::now() + KEEPALIVE_INTERVAL);
+                }
+            }
         }
-        Err(_) => match thread.join() {
-            Ok(Err(error)) => Err(error),
-            Ok(Ok(())) => Err(ServerError::StartupChannelClosed),
-            Err(_) => Err(ServerError::ThreadPanicked),
-        },
+    };
+
+    let mut response = Sse::new(output).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    response
+}
+
+fn snapshot_event(snapshot: &BrowserRepresentation) -> Event {
+    Event::default()
+        .event("snapshot")
+        .data(snapshot_json(snapshot))
+}
+
+fn snapshot_json(snapshot: &BrowserRepresentation) -> String {
+    serde_json::to_string(&BrowserWire::from(snapshot)).expect("browser wire snapshot serializes")
+}
+
+#[derive(Serialize)]
+struct BrowserWire {
+    canvas: CanvasWire,
+    overlay_id: String,
+    revision: u64,
+    text_widget: Option<TextWidgetWire>,
+}
+
+impl From<&BrowserRepresentation> for BrowserWire {
+    fn from(snapshot: &BrowserRepresentation) -> Self {
+        Self {
+            canvas: CanvasWire {
+                width: snapshot.canvas().width(),
+                height: snapshot.canvas().height(),
+            },
+            overlay_id: snapshot.overlay_id().to_owned(),
+            revision: snapshot.revision(),
+            text_widget: snapshot.text_widget().map(TextWidgetWire::from),
+        }
     }
 }
 
-async fn ping() -> &'static str {
-    "pong"
+#[derive(Serialize)]
+struct CanvasWire {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Serialize)]
+struct TextWidgetWire {
+    widget_id: String,
+    content: String,
+    position: PositionWire,
+    font_size: f32,
+    color: ColorWire,
+    alignment: WireAlignment,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WireAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+impl From<browser::BrowserAlignment> for WireAlignment {
+    fn from(alignment: browser::BrowserAlignment) -> Self {
+        match alignment {
+            browser::BrowserAlignment::Left => Self::Left,
+            browser::BrowserAlignment::Center => Self::Center,
+            browser::BrowserAlignment::Right => Self::Right,
+        }
+    }
+}
+
+impl From<&browser::BrowserTextWidget> for TextWidgetWire {
+    fn from(widget: &browser::BrowserTextWidget) -> Self {
+        Self {
+            widget_id: widget.widget_id().to_owned(),
+            content: widget.content().to_owned(),
+            position: PositionWire {
+                x: widget.position().x(),
+                y: widget.position().y(),
+            },
+            font_size: widget.font_size(),
+            color: ColorWire {
+                red: widget.color().red(),
+                green: widget.color().green(),
+                blue: widget.color().blue(),
+                alpha: widget.color().alpha(),
+            },
+            alignment: widget.alignment().into(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PositionWire {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Serialize)]
+struct ColorWire {
+    red: u8,
+    green: u8,
+    blue: u8,
+    alpha: u8,
+}
+
+/// Errors reported while starting or stopping the local web server.
+#[derive(Debug)]
+pub enum ServerError {
+    Bind(io::Error),
+    Runtime(io::Error),
+    Thread(io::Error),
+    Serve(io::Error),
+    ThreadPanicked,
+    StartupChannelClosed,
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bind(error) => write!(formatter, "could not bind the web server: {error}"),
+            Self::Runtime(error) => {
+                write!(formatter, "could not create the Tokio runtime: {error}")
+            }
+            Self::Thread(error) => {
+                write!(formatter, "could not start the web-server thread: {error}")
+            }
+            Self::Serve(error) => {
+                write!(formatter, "the web server stopped with an error: {error}")
+            }
+            Self::ThreadPanicked => formatter.write_str("the web-server thread panicked"),
+            Self::StartupChannelClosed => {
+                formatter.write_str("the web-server thread exited before reporting its address")
+            }
+        }
+    }
+}
+
+impl Error for ServerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Bind(error) | Self::Runtime(error) | Self::Thread(error) | Self::Serve(error) => {
+                Some(error)
+            }
+            Self::ThreadPanicked | Self::StartupChannelClosed => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use http_body_util::BodyExt;
+    use std::sync::{Arc, Barrier};
     use std::time::Duration;
+    use tower::ServiceExt;
 
-    fn request(address: SocketAddr, path: &str) -> String {
-        let mut stream = TcpStream::connect(address).expect("connect to test server");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set test-client read timeout");
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    use crate::browser;
+    use crate::model::Overlay;
+
+    fn overlay() -> Overlay {
+        Overlay::with_dimensions("Starting Soon", 1280, 720).expect("valid test overlay")
+    }
+
+    fn changed_overlay(base: &Overlay, name: &str) -> Overlay {
+        let mut changed = base.clone();
+        changed.rename(name).expect("valid test name");
+        changed
+    }
+
+    fn wire_id(overlay: &Overlay) -> String {
+        overlay.id().to_string()
+    }
+
+    async fn response_for(router: Router, path: &str) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("valid test request"),
+            )
+            .await
+            .expect("router response")
+    }
+
+    async fn next_frame(body: &mut Body) -> Option<Vec<u8>> {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+                .await
+                .expect("body frame did not arrive within the test bound")?;
+            let frame = frame.expect("body frame error");
+            if let Ok(data) = frame.into_data() {
+                return Some(data.to_vec());
+            }
+        }
+    }
+
+    fn event_snapshot(frame: &[u8]) -> serde_json::Value {
+        let text = std::str::from_utf8(frame).expect("SSE frame is UTF-8");
+        assert!(
+            text.starts_with("event: snapshot\n"),
+            "unexpected SSE frame: {text:?}"
+        );
+        assert!(!text.contains("\nid:"));
+        assert!(!text.contains("\nretry:"));
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("snapshot event data");
+        serde_json::from_str(data).expect("snapshot event JSON")
+    }
+
+    #[test]
+    fn register_seeds_snapshot_and_rejects_duplicate_id() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+
+        hub.register(initial.clone()).expect("register overlay");
+        assert_eq!(
+            hub.snapshot(id).expect("snapshot lock"),
+            Some(initial.clone())
+        );
+        assert!(matches!(
+            hub.register(initial),
+            Err(HubError::Duplicate { id: duplicate }) if duplicate == id
+        ));
+    }
+
+    #[test]
+    fn unknown_lookup_and_publish_are_explicit() {
+        let hub = OverlayHub::new();
+        let unknown = overlay();
+        let id = unknown.id();
+
+        assert_eq!(hub.snapshot(id).expect("snapshot lock"), None);
+        assert!(matches!(hub.subscribe(id), Err(HubError::Unknown { id: found }) if found == id));
+        assert!(
+            matches!(hub.publish(&unknown), Err(HubError::Unknown { id: found }) if found == id)
+        );
+        assert_eq!(hub.remove(id).expect("remove lock"), None);
+    }
+
+    #[test]
+    fn publish_revision_outcomes_replace_and_keep_zero_subscriber_state_current() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+        hub.register(initial.clone()).expect("register overlay");
+
+        let newer = changed_overlay(&initial, "Live");
+        assert_eq!(hub.publish(&newer), Ok(PublishResult::Published));
+        assert_eq!(
+            hub.snapshot(id).expect("snapshot lock"),
+            Some(newer.clone())
+        );
+        assert_eq!(hub.publish(&newer), Ok(PublishResult::Unchanged));
+
+        let stale = initial.clone();
+        assert!(matches!(
+            hub.publish(&stale),
+            Err(HubError::Stale {
+                id: found,
+                current_revision: 1,
+                incoming_revision: 0
+            }) if found == id
+        ));
+
+        let conflicting = changed_overlay(&initial, "Another Live");
+        assert!(matches!(
+            hub.publish(&conflicting),
+            Err(HubError::Conflict { id: found, revision: 1 }) if found == id
+        ));
+
+        let receiver = hub.subscribe(id).expect("subscribe current state");
+        assert_eq!(receiver.borrow().revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_converge_on_latest_snapshot() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+        hub.register(initial.clone()).expect("register overlay");
+        let mut first = hub.subscribe(id).expect("first subscriber");
+        let mut second = hub.subscribe(id).expect("second subscriber");
+
+        let latest = changed_overlay(&initial, "Latest");
+        hub.publish(&latest).expect("publish latest");
+        first.changed().await.expect("first update");
+        second.changed().await.expect("second update");
+        assert_eq!(first.borrow_and_update().revision(), 1);
+        assert_eq!(second.borrow_and_update().revision(), 1);
+    }
+
+    #[test]
+    fn subscribe_and_publish_race_has_no_lost_update() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+        hub.register(initial.clone()).expect("register overlay");
+        let latest = changed_overlay(&initial, "Published");
+        let barrier = Arc::new(Barrier::new(2));
+        let thread_hub = hub.clone();
+        let thread_barrier = barrier.clone();
+        let subscriber = std::thread::spawn(move || {
+            thread_barrier.wait();
+            thread_hub
+                .subscribe(id)
+                .expect("subscribe race participant")
+        });
+        barrier.wait();
+        hub.publish(&latest).expect("publish race participant");
+        let mut receiver = subscriber.join().expect("subscriber thread");
+
+        let first_revision = receiver.borrow_and_update().revision();
+        assert!(first_revision <= 1);
+        if first_revision == 0 {
+            assert!(receiver.has_changed().expect("receiver remains open"));
+            assert_eq!(receiver.borrow_and_update().revision(), 1);
+        }
+    }
+
+    #[test]
+    fn publish_and_remove_race_leaves_removed_id_unknown() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+        hub.register(initial.clone()).expect("register overlay");
+        let latest = changed_overlay(&initial, "Published");
+        let barrier = Arc::new(Barrier::new(2));
+        let thread_hub = hub.clone();
+        let thread_barrier = barrier.clone();
+        let publisher = std::thread::spawn(move || {
+            thread_barrier.wait();
+            thread_hub.publish(&latest)
+        });
+        barrier.wait();
+        let removed = hub.remove(id).expect("remove race participant");
+        assert!(removed.is_some());
+        let result = publisher.join().expect("publisher thread");
+        assert!(matches!(
+            result,
+            Ok(PublishResult::Published) | Err(HubError::Unknown { .. })
+        ));
+        assert_eq!(hub.snapshot(id).expect("snapshot after removal"), None);
+    }
+
+    #[test]
+    fn removal_closes_existing_receiver() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+        hub.register(initial).expect("register overlay");
+        let receiver = hub.subscribe(id).expect("subscribe overlay");
+        assert!(hub.remove(id).expect("remove overlay").is_some());
+        assert!(receiver.has_changed().is_err());
+    }
+
+    #[tokio::test]
+    async fn router_preserves_ping_and_renders_exact_html_headers() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial.clone()).expect("register overlay");
+
+        let ping = response_for(router_with_hub(hub.clone()), "/ping").await;
+        assert_eq!(ping.status(), StatusCode::OK);
+        assert_eq!(ping.into_body().collect().await.unwrap().to_bytes(), "pong");
+
+        let response = response_for(router_with_hub(hub), &format!("/overlay/{id}")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        assert_eq!(response.headers().get(header::PRAGMA).unwrap(), "no-cache");
+        assert_eq!(response.headers().get(header::EXPIRES).unwrap(), "0");
+        let html = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(html, browser::render(&initial));
+    }
+
+    #[tokio::test]
+    async fn malformed_unknown_and_removed_routes_return_404_before_streaming() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial).expect("register overlay");
+
+        for path in [
+            "/overlay/not-an-id",
+            "/overlay/00000000-0000-0000-0000-000000000000",
+            "/overlay/not-an-id/events",
+        ] {
+            let response = response_for(router_with_hub(hub.clone()), path).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "path {path}");
+        }
+        hub.remove(OverlayId::from_uuid(
+            uuid::Uuid::parse_str(&id).expect("test ID"),
+        ))
+        .expect("remove overlay");
+        let response = response_for(router_with_hub(hub), &format!("/overlay/{id}/events")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn events_send_current_then_next_complete_named_snapshot() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial.clone()).expect("register overlay");
+        let response = response_for(
+            router_with_hub(hub.clone()),
+            &format!("/overlay/{id}/events"),
         )
-        .expect("send HTTP request");
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/event-stream"
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        let mut body = response.into_body();
+        let first = next_frame(&mut body).await.expect("first snapshot frame");
+        let first_json = event_snapshot(&first);
+        assert_eq!(first_json["overlay_id"], id);
+        assert_eq!(first_json["revision"], 0);
+        assert_eq!(first_json["canvas"]["width"], 1280);
+        assert_eq!(first_json["canvas"]["height"], 720);
+        assert!(first_json["text_widget"].is_null());
 
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .expect("read HTTP response");
-        String::from_utf8(response).expect("HTTP response is UTF-8")
+        let latest = changed_overlay(&initial, "Updated");
+        hub.publish(&latest).expect("publish update");
+        let next = next_frame(&mut body).await.expect("next snapshot frame");
+        let next_json = event_snapshot(&next);
+        assert_eq!(next_json["revision"], 1);
+        assert_eq!(next_json["overlay_id"], id);
+    }
+
+    #[tokio::test]
+    async fn reconnect_starts_at_current_latest_without_replay() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial.clone()).expect("register overlay");
+        let latest = changed_overlay(&initial, "Latest");
+        hub.publish(&latest).expect("publish latest");
+
+        let response = response_for(router_with_hub(hub), &format!("/overlay/{id}/events")).await;
+        let mut body = response.into_body();
+        let first = next_frame(&mut body).await.expect("reconnect snapshot");
+        assert_eq!(event_snapshot(&first)["revision"], 1);
+    }
+
+    #[tokio::test]
+    async fn rapid_updates_are_bounded_to_latest_value() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial.clone()).expect("register overlay");
+        let response = response_for(
+            router_with_hub(hub.clone()),
+            &format!("/overlay/{id}/events"),
+        )
+        .await;
+        let mut body = response.into_body();
+        next_frame(&mut body).await.expect("initial snapshot");
+
+        let mut latest = initial;
+        for revision in 1..=32 {
+            latest = changed_overlay(&latest, &format!("Revision {revision}"));
+            hub.publish(&latest).expect("rapid publication");
+        }
+        let frame = next_frame(&mut body)
+            .await
+            .expect("bounded latest snapshot");
+        assert_eq!(event_snapshot(&frame)["revision"], 32);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), next_frame(&mut body))
+                .await
+                .is_err(),
+            "stream unexpectedly queued an unbounded history"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn keepalive_is_emitted_under_paused_tokio_time() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial).expect("register overlay");
+        let response = response_for(
+            router_with_hub(hub.clone()),
+            &format!("/overlay/{id}/events"),
+        )
+        .await;
+        let mut body = response.into_body();
+        next_frame(&mut body).await.expect("initial snapshot");
+
+        tokio::time::advance(KEEPALIVE_INTERVAL).await;
+        tokio::task::yield_now().await;
+        let keepalive = next_frame(&mut body).await.expect("keepalive frame");
+        assert_eq!(keepalive, b": keepalive\n\n");
+    }
+
+    #[tokio::test]
+    async fn stream_harness_reads_bounded_frames_without_hanging() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = wire_id(&initial);
+        hub.register(initial.clone()).expect("register overlay");
+        let response = response_for(
+            router_with_hub(hub.clone()),
+            &format!("/overlay/{id}/events"),
+        )
+        .await;
+        let mut body = response.into_body();
+        let first = next_frame(&mut body).await.expect("bounded first frame");
+        assert_eq!(event_snapshot(&first)["revision"], 0);
+        let latest = changed_overlay(&initial, "Bounded");
+        hub.publish(&latest).expect("bounded update");
+        let next = next_frame(&mut body).await.expect("bounded next frame");
+        assert_eq!(event_snapshot(&next)["revision"], 1);
     }
 
     #[test]
@@ -233,11 +963,7 @@ mod tests {
             }
         }
 
-        let response = request(address, "/ping");
         let shutdown = server.shutdown();
-
-        assert!(response.contains("HTTP/1.1 200 OK\r\n"));
-        assert_eq!(response.split("\r\n\r\n").nth(1), Some("pong"));
         shutdown.expect("stop test server");
     }
 
@@ -251,26 +977,5 @@ mod tests {
         restarted_server
             .shutdown()
             .expect("stop restarted test server");
-    }
-
-    #[test]
-    fn ping_returns_pong() {
-        let server = start_on_port(0).expect("start test server");
-        let response = request(server.local_addr(), "/ping");
-        let shutdown = server.shutdown();
-
-        assert!(response.contains("HTTP/1.1 200 OK\r\n"));
-        assert_eq!(response.split("\r\n\r\n").nth(1), Some("pong"));
-        shutdown.expect("stop test server");
-    }
-
-    #[test]
-    fn unknown_route_returns_not_found() {
-        let server = start_on_port(0).expect("start test server");
-        let response = request(server.local_addr(), "/missing");
-        let shutdown = server.shutdown();
-
-        assert!(response.contains("HTTP/1.1 404 Not Found\r\n"));
-        shutdown.expect("stop test server");
     }
 }
