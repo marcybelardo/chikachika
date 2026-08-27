@@ -21,6 +21,10 @@ impl OverlayId {
     pub fn as_uuid(self) -> Uuid {
         self.0
     }
+
+    pub(crate) const fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
 impl fmt::Display for OverlayId {
@@ -40,6 +44,10 @@ impl TextWidgetId {
     /// Returns the generated UUID without exposing a way to replace it.
     pub fn as_uuid(self) -> Uuid {
         self.0
+    }
+
+    pub(crate) const fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
     }
 }
 
@@ -218,6 +226,27 @@ impl TextWidget {
         })
     }
 
+    pub(crate) fn from_parts(
+        id: TextWidgetId,
+        content: String,
+        position: Position,
+        font_size: f32,
+        color: Color,
+        alignment: Alignment,
+    ) -> Result<Self, ModelError> {
+        validate_position(position)?;
+        validate_font_size(font_size)?;
+
+        Ok(Self {
+            id,
+            content,
+            position,
+            font_size,
+            color,
+            alignment,
+        })
+    }
+
     /// Returns this widget's stable identity.
     pub const fn id(&self) -> TextWidgetId {
         self.id
@@ -332,6 +361,33 @@ impl Overlay {
             canvas,
             text_widget: None,
             revision: 0,
+        })
+    }
+
+    pub(crate) fn from_parts(
+        id: OverlayId,
+        name: String,
+        canvas: CanvasSize,
+        text_widget: Option<TextWidget>,
+        revision: u64,
+    ) -> Result<Self, ModelError> {
+        validate_name(&name)?;
+        if let Some(widget) = text_widget.as_ref() {
+            validate_position(widget.position)?;
+            if widget.position.x > canvas.width as f32 || widget.position.y > canvas.height as f32 {
+                return Err(ModelError::InvalidPosition {
+                    x: widget.position.x,
+                    y: widget.position.y,
+                });
+            }
+        }
+
+        Ok(Self {
+            id,
+            name,
+            canvas,
+            text_widget,
+            revision,
         })
     }
 
