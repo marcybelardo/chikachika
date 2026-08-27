@@ -1,6 +1,6 @@
 # Chikachika
 
-Chikachika is a pre-release local-first desktop application for creating and using overlays. The current repository contains the initial native GUI and loopback health-server slice; the overlay editor and browser-source workflow are not implemented yet.
+Chikachika is a pre-release local-first desktop application for creating and using overlays. The current repository contains the initial native GUI and loopback health-server slice, a framework-independent overlay model, local persistence and an embedded browser renderer. The overlay editor and browser-source hosting workflow are not implemented yet.
 
 ## Status
 
@@ -12,13 +12,15 @@ Implemented in the current baseline:
 - A local web server started by the application in the same process.
 - A `GET /ping` health endpoint that returns the plain-text response `pong`.
 - Automated Rust and documentation checks.
+- A framework-independent overlay model with stable UUID identities, fixed canvas validation, and zero-or-one text-widget support.
+- Versioned JSON persistence in the platform app-local data directory, including non-destructive malformed-data handling and safe replacement.
+- A compile-time embedded transparent browser renderer for the current overlay model.
 
 Not implemented yet:
 
-- Overlay creation, editing, rendering, or management.
-- Browser-source overlay routes, browser assets, or live SSE updates.
-- Local overlay persistence or a documented persistence location.
-- Stable overlay URLs. The current server has only the health endpoint; do not configure an OBS Browser Source from this baseline.
+- Overlay creation, editing, or management in the native GUI.
+- Browser-source overlay HTTP routes, stable URL controls, or live SSE updates.
+- Stable overlay URLs exposed by the running application. The current server has only the health endpoint; do not configure an OBS Browser Source from this baseline.
 - OBS connection instructions or end-to-end OBS verification on macOS and Linux.
 - Idle CPU or memory measurements for a representative release/development build.
 
@@ -94,12 +96,12 @@ The Rust job runs formatting and locked all-target tests on Ubuntu and macOS. Th
 
 ## Current architecture
 
-The application is one native process. `src/main.rs` starts the loopback server, then runs the eframe/egui GUI; when the GUI exits, it shuts down the server. The server runs on a dedicated current-thread Tokio runtime and currently exposes only `GET /ping`. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
+The application is one native process. `src/main.rs` starts the loopback server, then runs the eframe/egui GUI; when the GUI exits, it shuts down the server. The framework-independent model in `src/model.rs` is the authoritative overlay document. The persistence adapter in `src/persistence.rs` stores versioned JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a self-contained transparent HTML document with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and currently exposes only `GET /ping`; it does not yet host the browser renderer. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
 
 ## Pending documentation and validation
 
 The following documentation must wait for the corresponding implementation and verification work:
 
 - OBS setup and browser-source instructions, including macOS and Linux end-to-end checks.
-- The actual overlay URL contract and any persistence path or data-format guidance.
+- The application’s overlay URL contract and any additional data-format guidance beyond the implemented persistence adapter.
 - Release-oriented idle CPU and memory measurements, including the build and environment used for those measurements.
