@@ -5,6 +5,8 @@
 //! future server adapter can host the same representation without introducing
 //! browser-owned state.
 
+use serde::Serialize;
+
 use crate::model::{Alignment, Color, Overlay, Position, TextWidget};
 
 const INDEX_HTML: &str = include_str!("../assets/browser/index.html");
@@ -12,11 +14,12 @@ const STYLES: &str = include_str!("../assets/browser/style.css");
 const SCRIPT: &str = include_str!("../assets/browser/overlay.js");
 
 /// A complete browser projection of an [`Overlay`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BrowserRepresentation {
-    canvas: BrowserCanvas,
     overlay_id: String,
     revision: u64,
+    canvas: BrowserCanvas,
     text_widget: Option<BrowserTextWidget>,
 }
 
@@ -43,7 +46,8 @@ impl BrowserRepresentation {
 }
 
 /// Fixed dimensions for the browser canvas.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BrowserCanvas {
     width: u32,
     height: u32,
@@ -62,7 +66,8 @@ impl BrowserCanvas {
 }
 
 /// A complete browser projection of the model's supported text widget.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BrowserTextWidget {
     widget_id: String,
     content: String,
@@ -105,7 +110,8 @@ impl BrowserTextWidget {
 }
 
 /// A text-widget position in canvas coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BrowserPosition {
     x: f32,
     y: f32,
@@ -124,7 +130,8 @@ impl BrowserPosition {
 }
 
 /// An RGBA browser color.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BrowserColor {
     red: u8,
     green: u8,
@@ -155,7 +162,8 @@ impl BrowserColor {
 }
 
 /// Horizontal alignment supported by the browser projection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BrowserAlignment {
     Left,
     Center,
@@ -379,6 +387,94 @@ mod tests {
         assert!(html.contains("color: rgba(10, 20, 30, 0.5019608);"));
         assert!(html.contains("text-align: center;"));
         assert!(html.contains("Hello &lt;stream&gt; &amp; &quot;friends&quot;"));
+    }
+
+    #[test]
+    fn empty_snapshot_serializes_to_exact_browser_contract() {
+        let overlay = empty_overlay();
+        let representation = project(&overlay);
+        let overlay_id = overlay.id().to_string();
+
+        assert_eq!(
+            serde_json::to_string(&representation).expect("serialize empty snapshot"),
+            format!(
+                r#"{{"overlay_id":"{overlay_id}","revision":0,"canvas":{{"width":1280,"height":720}},"text_widget":null}}"#
+            )
+        );
+        assert_eq!(representation.overlay_id(), overlay_id);
+        assert_eq!(representation.revision(), 0);
+    }
+
+    #[test]
+    fn populated_snapshot_serializes_to_exact_browser_contract() {
+        let mut overlay = empty_overlay();
+        let widget = TextWidget::with_properties(
+            "Hello <stream> & \"friends\"",
+            Position::new(12.5, 34.25),
+            42.5,
+            Color::rgba(10, 20, 30, 128),
+            Alignment::Right,
+        )
+        .expect("valid widget");
+        let widget_id = widget.id().to_string();
+        overlay.add_text_widget(widget).expect("add widget");
+        let representation = project(&overlay);
+
+        assert_eq!(
+            serde_json::to_string(&representation).expect("serialize populated snapshot"),
+            format!(
+                r#"{{"overlay_id":"{}","revision":1,"canvas":{{"width":1280,"height":720}},"text_widget":{{"widget_id":"{}","content":"Hello <stream> & \"friends\"","position":{{"x":12.5,"y":34.25}},"font_size":42.5,"color":{{"red":10,"green":20,"blue":30,"alpha":128}},"alignment":"right"}}}}"#,
+                overlay.id(),
+                widget_id
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_serialization_preserves_ids_and_revisions_across_projection() {
+        let mut overlay = empty_overlay();
+        let widget = TextWidget::new("stable");
+        let widget_id = overlay.add_text_widget(widget).expect("add widget");
+        let first = project(&overlay);
+        let first_json = serde_json::to_string(&first).expect("serialize first snapshot");
+
+        overlay
+            .set_text_content(widget_id, "changed")
+            .expect("change content");
+        let second = project(&overlay);
+        let second_json = serde_json::to_string(&second).expect("serialize second snapshot");
+
+        assert_eq!(first.overlay_id(), second.overlay_id());
+        assert_eq!(
+            first.text_widget().expect("first widget").widget_id(),
+            second.text_widget().expect("second widget").widget_id()
+        );
+        assert_eq!(first.revision(), 1);
+        assert_eq!(second.revision(), 2);
+        assert_ne!(first_json, second_json);
+    }
+
+    #[test]
+    fn all_supported_alignments_serialize_as_exact_lowercase_values() {
+        for (model_alignment, expected) in [
+            (Alignment::Left, "left"),
+            (Alignment::Center, "center"),
+            (Alignment::Right, "right"),
+        ] {
+            let mut overlay = empty_overlay();
+            let widget = TextWidget::with_properties(
+                "aligned",
+                Position::origin(),
+                16.0,
+                Color::white(),
+                model_alignment,
+            )
+            .expect("valid widget");
+            overlay.add_text_widget(widget).expect("add widget");
+
+            let json = serde_json::to_string(&project(&overlay)).expect("serialize alignment");
+            assert!(json.contains(&format!(r#""alignment":"{expected}""#)));
+        }
     }
 
     #[test]
