@@ -1430,6 +1430,31 @@ mod tests {
         assert_eq!(widget.color(), Color::rgba(10, 20, 30, 128));
         assert_eq!(widget.alignment(), Alignment::Center);
         assert!(coordinator.is_dirty());
+        let published_overlay = coordinator
+            .hub()
+            .snapshot(overlay_id)
+            .expect("published overlay remains available")
+            .expect("published overlay exists");
+        let browser_snapshot = crate::browser::project(&published_overlay);
+        assert_eq!(browser_snapshot.overlay_id(), &overlay_id.to_string());
+        assert_eq!(
+            browser_snapshot.revision(),
+            coordinator
+                .overlay(overlay_id)
+                .expect("overlay remains present")
+                .revision()
+        );
+        let browser_widget = browser_snapshot.text_widget().expect("browser text widget");
+        assert_eq!(browser_widget.widget_id(), &widget_id.to_string());
+        assert_eq!(browser_widget.content(), "Starting\nSoon");
+        assert_eq!(browser_widget.position().x(), 123.0);
+        assert_eq!(browser_widget.position().y(), 45.0);
+        assert_eq!(browser_widget.font_size(), 42.0);
+        assert_eq!(browser_widget.color().alpha(), 128);
+        assert_eq!(
+            browser_widget.alignment(),
+            crate::browser::BrowserAlignment::Center
+        );
 
         coordinator.save().expect("save valid edit");
         let prior = coordinator.overlay(overlay_id).unwrap().clone();

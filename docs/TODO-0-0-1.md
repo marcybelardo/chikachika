@@ -25,15 +25,15 @@ A streamer can create a basic text overlay in the desktop application, save it l
 - [x] The application presents a usable browser-source URL only after server readiness is known and an overlay is selected and registered.
 - [x] Server startup, persistence, and shutdown errors remain visible and non-destructive; normal shutdown coordinates with the server thread.
 
-### Canvas and text editing (issue #5, pending)
+### Canvas and text editing (issue #5)
 
-- [ ] An overlay uses an explicitly configured fixed-size canvas.
-- [ ] An overlay supports exactly zero or one optional text widget; multiple widgets are deferred.
-- [ ] A user can select and move the text widget on the canvas.
-- [ ] A user can edit the widget's text content.
-- [ ] A user can configure the text's font size, color, and alignment.
-- [ ] The editor provides a useful visual preview, while the browser output is authoritative.
-- [ ] Layering, canvas resizing, rich text, and animation are deferred beyond 0.0.1.
+- [x] An overlay uses an explicitly configured fixed-size canvas.
+- [x] An overlay supports exactly zero or one optional text widget; multiple widgets are deferred.
+- [x] A user can select and move the text widget on the canvas; dragging preserves the grab offset and stays within the canvas bounds.
+- [x] A user can edit the widget's text content, including multiline content.
+- [x] A user can configure the text's font size, RGBA color, and alignment.
+- [x] The editor provides a useful fixed-aspect visual preview, while the browser output remains authoritative for final rendering.
+- [x] Layering, canvas resizing, rich text, and animation remain deferred beyond 0.0.1.
 
 ### Local persistence (issue #4 integration)
 
