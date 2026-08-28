@@ -17,10 +17,11 @@ Implemented in the current target:
 - A compile-time embedded transparent browser renderer for the current overlay model.
 - Server-side hosting for registered overlays at stable `/overlay/{overlay-id}` HTML routes with bounded `/overlay/{overlay-id}/events` SSE snapshots.
 - Issue #4 application-state wiring for overlay collection, selection, lifecycle actions, dirty/save state, visible errors, and server shutdown coordination.
+- Issue #5 native one-widget editing with multiline text, font size, RGBA color, alignment, fixed-canvas preview, bounded drag movement, and live publication through the shared hosting hub.
 
-### Native overlay workspace (issue #4)
+### Native overlay workspace (issues #4 and #5)
 
-The native workspace uses the shared model, persistence store, and hosting hub rather than maintaining a second document representation. It provides the overlay collection and lifecycle actions (create, name, select, rename, and explicitly confirm deletion). Its startup and readiness contract is:
+The native workspace uses the shared model, persistence store, and hosting hub rather than maintaining a second document representation. It provides the overlay collection and lifecycle actions (create, name, select, rename, and explicitly confirm deletion), plus a one-widget text editor and fixed-canvas preview. Its startup and readiness contract is:
 
 - Resolve the platform app-local store and restore valid saved overlays before presenting a usable workspace.
 - Treat a missing store as an empty workspace; do not silently replace malformed or unsupported data with an empty file.
@@ -29,9 +30,8 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 - Keep startup, load, save, and shutdown failures visible and non-destructive so a user can recover without losing in-memory work or persisted data; malformed startup sources require repair and restart.
 - Preserve each overlay's stable identity and browser-source URL across renames and application restarts.
 
-Still pending beyond issue #4:
+Still pending beyond issues #4 and #5:
 
-- Text-widget selection, movement, content editing, and supported styling in the native workspace (**issue #5**).
 - User-facing browser-source URL copy/open actions and configurable-port UX (**issue #8**); the current normal-run default remains loopback `127.0.0.1:51737`.
 - OBS setup instructions and end-to-end OBS verification on macOS and Linux, including target-platform validation.
 - Idle CPU and memory measurements for a representative release/development build.
@@ -131,13 +131,12 @@ The Rust job runs formatting and locked all-target tests on Ubuntu and macOS. Th
 
 ## Current architecture
 
-The application is one native process. `src/main.rs` wires the application coordinator, shared `OverlayHub`, loopback server, and eframe/egui GUI; when the GUI exits, it coordinates graceful server shutdown and joins the dedicated server thread. The application coordinator owns the overlay collection, selected-overlay state, dirty state, and latest user-visible error while the framework-independent model in `src/model.rs` remains the authoritative overlay document. The persistence adapter in `src/persistence.rs` stores versioned JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a serializable complete browser snapshot and self-contained transparent HTML with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and exposes `GET /ping`, registered-overlay HTML at `GET /overlay/{id}`, and bounded named-SSE snapshots at `GET /overlay/{id}/events`. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
+The application is one native process. `src/main.rs` wires the application coordinator, shared `OverlayHub`, loopback server, and eframe/egui GUI; when the GUI exits, it coordinates graceful server shutdown and joins the dedicated server thread. The application coordinator owns the overlay collection, selected-overlay state, dirty state, and latest user-visible error while the framework-independent model in `src/model.rs` remains the authoritative overlay document. The GUI editor in `src/gui.rs` routes one-widget content, style, and position changes through the coordinator, renders a fixed-aspect preview, and publishes accepted revisions through the shared hub. The persistence adapter in `src/persistence.rs` stores versioned JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a serializable complete browser snapshot and self-contained transparent HTML with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and exposes `GET /ping`, registered-overlay HTML at `GET /overlay/{id}`, and bounded named-SSE snapshots at `GET /overlay/{id}/events`. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
 
 ## Pending documentation and validation
 
 The following documentation and validation remain pending until their corresponding implementation or verification work is complete:
 
-- Native text-widget selection, movement, content editing, supported styling, and editor-driven browser publication (**issue #5**).
 - Browser-source URL copy/open controls and configurable-port UX (**issue #8**).
 - OBS setup and browser-source instructions, including macOS and Linux end-to-end checks and target-platform validation.
 - Release-oriented idle CPU and memory measurements, including the build and environment used for those measurements.
