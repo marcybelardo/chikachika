@@ -7,7 +7,7 @@
 use eframe::egui;
 
 use crate::app::{BootstrapOutcome, HeadlessCoordinator};
-use crate::model::OverlayId;
+use crate::model::{Alignment, Color, OverlayId, Position, TextWidget, TextWidgetId};
 
 #[derive(Default)]
 struct TransientState {
@@ -244,40 +244,46 @@ impl ChikachikaApp {
             });
 
         egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("Overlay details");
-            ui.separator();
-            let Some(overlay) = coordinator.selected_overlay() else {
-                ui.label("Select an overlay or use Create overlay to make your first workspace.");
-                ui.label("Text-widget and canvas editing are planned for issue #5.");
-                return;
-            };
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Overlay details");
+                ui.separator();
+                let Some(overlay) = coordinator.selected_overlay() else {
+                    ui.label(
+                        "Select an overlay or use Create overlay to make your first workspace.",
+                    );
+                    return;
+                };
 
-            let id = overlay.id();
-            let name = overlay.name().to_owned();
-            let canvas = overlay.canvas();
-            ui.label(format!("Name: {name}"));
-            ui.label(format!("Canvas: {} × {}", canvas.width(), canvas.height()));
-            ui.label(format!("Stable identity: {id}"));
-            ui.label(format!("Hosted revision: {}", overlay.revision()));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Rename").clicked() {
-                    let _ = begin_rename(coordinator, transient);
-                }
-                if ui.button("Delete").clicked() {
-                    let _ = begin_delete(coordinator, transient);
-                }
-            });
-            ui.add_space(8.0);
-            ui.label("Browser-source URL");
-            if let Some(url) = coordinator.selected_url() {
-                ui.monospace(url);
-            } else {
-                ui.label(
+                let id = overlay.id();
+                let name = overlay.name().to_owned();
+                let canvas = overlay.canvas();
+                let revision = overlay.revision();
+                ui.label(format!("Name: {name}"));
+                ui.label(format!("Canvas: {} × {}", canvas.width(), canvas.height()));
+                ui.label(format!("Stable identity: {id}"));
+                ui.label(format!("Hosted revision: {revision}"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Rename").clicked() {
+                        let _ = begin_rename(coordinator, transient);
+                    }
+                    if ui.button("Delete").clicked() {
+                        let _ = begin_delete(coordinator, transient);
+                    }
+                });
+                ui.add_space(8.0);
+                render_text_editor(ui, coordinator, id);
+                ui.add_space(8.0);
+                ui.label("Browser-source URL");
+                if let Some(url) = coordinator.selected_url() {
+                    ui.monospace(url);
+                } else {
+                    ui.label(
                     "Unavailable until the local server successfully binds and reports readiness.",
                 );
-            }
-            ui.label("URL actions and configurable-port controls are deferred to issue #8.");
+                }
+                ui.label("URL actions and configurable-port controls are deferred to issue #8.");
+            });
         });
 
         render_create_dialog(context, coordinator, transient);
@@ -297,6 +303,199 @@ impl Default for ChikachikaApp {
 impl eframe::App for ChikachikaApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.render(context);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TextEditorValues {
+    id: TextWidgetId,
+    content: String,
+    position: Position,
+    font_size: f32,
+    color: Color,
+    alignment: Alignment,
+}
+
+impl TextEditorValues {
+    fn from_widget(widget: &TextWidget) -> Self {
+        Self {
+            id: widget.id(),
+            content: widget.content().to_owned(),
+            position: widget.position(),
+            font_size: widget.font_size(),
+            color: widget.color(),
+            alignment: widget.alignment(),
+        }
+    }
+}
+
+fn add_text_widget(
+    coordinator: &mut HeadlessCoordinator,
+    overlay_id: OverlayId,
+) -> Result<(), String> {
+    coordinator
+        .update_overlay(overlay_id, |overlay| {
+            overlay.add_text_widget(TextWidget::new("Text"))?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn remove_text_widget(
+    coordinator: &mut HeadlessCoordinator,
+    overlay_id: OverlayId,
+    widget_id: TextWidgetId,
+) -> Result<(), String> {
+    coordinator
+        .update_overlay(overlay_id, |overlay| {
+            overlay.remove_text_widget(widget_id)?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn apply_text_editor_values(
+    coordinator: &mut HeadlessCoordinator,
+    overlay_id: OverlayId,
+    values: TextEditorValues,
+) -> Result<(), String> {
+    coordinator
+        .update_overlay(overlay_id, move |overlay| {
+            overlay.set_text_content(values.id, values.content)?;
+            overlay.set_text_position(values.id, values.position)?;
+            overlay.set_text_font_size(values.id, values.font_size)?;
+            overlay.set_text_color(values.id, values.color)?;
+            overlay.set_text_alignment(values.id, values.alignment)
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn render_text_editor(
+    ui: &mut egui::Ui,
+    coordinator: &mut HeadlessCoordinator,
+    overlay_id: OverlayId,
+) {
+    ui.heading("Text widget");
+    let Some(overlay) = coordinator.overlay(overlay_id) else {
+        return;
+    };
+    let canvas = overlay.canvas();
+    let Some(widget) = overlay.text_widget() else {
+        ui.label("This overlay has no text widget.");
+        if ui.button("Add text widget").clicked() {
+            let _ = add_text_widget(coordinator, overlay_id);
+        }
+        return;
+    };
+    let mut values = TextEditorValues::from_widget(widget);
+    let original = values.clone();
+
+    if ui.button("Remove text widget").clicked() {
+        let _ = remove_text_widget(coordinator, overlay_id, values.id);
+        return;
+    }
+
+    ui.label("Content");
+    ui.add(
+        egui::TextEdit::multiline(&mut values.content)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY),
+    );
+    ui.horizontal(|ui| {
+        ui.label("Font size");
+        ui.add(
+            egui::DragValue::new(&mut values.font_size)
+                .range(1.0..=512.0)
+                .speed(0.5)
+                .suffix(" px"),
+        );
+        ui.label("Color");
+        let mut color = egui::Color32::from_rgba_unmultiplied(
+            values.color.red(),
+            values.color.green(),
+            values.color.blue(),
+            values.color.alpha(),
+        );
+        if ui.color_edit_button_srgba(&mut color).changed() {
+            values.color = Color::rgba(color.r(), color.g(), color.b(), color.a());
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Alignment");
+        ui.selectable_value(&mut values.alignment, Alignment::Left, "Left");
+        ui.selectable_value(&mut values.alignment, Alignment::Center, "Center");
+        ui.selectable_value(&mut values.alignment, Alignment::Right, "Right");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Position");
+        let mut x = values.position.x();
+        let mut y = values.position.y();
+        ui.label("X");
+        ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
+        ui.label("Y");
+        ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
+        values.position = Position::new(x, y);
+    });
+
+    ui.label("Canvas preview — drag to move the text widget");
+    render_canvas_preview(ui, canvas, &mut values);
+
+    if values != original {
+        let _ = apply_text_editor_values(coordinator, overlay_id, values);
+    }
+}
+
+fn render_canvas_preview(
+    ui: &mut egui::Ui,
+    canvas: crate::model::CanvasSize,
+    values: &mut TextEditorValues,
+) {
+    let available_width = ui.available_width().max(1.0);
+    let max_height = 360.0;
+    let scale = (available_width / canvas.width() as f32)
+        .min(max_height / canvas.height() as f32)
+        .min(1.0);
+    let size = egui::vec2(
+        canvas.width() as f32 * scale,
+        canvas.height() as f32 * scale,
+    );
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, egui::Color32::from_gray(24));
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(96)),
+    );
+
+    let color = egui::Color32::from_rgba_unmultiplied(
+        values.color.red(),
+        values.color.green(),
+        values.color.blue(),
+        values.color.alpha(),
+    );
+    let anchor = match values.alignment {
+        Alignment::Left => egui::Align2::LEFT_TOP,
+        Alignment::Center => egui::Align2::CENTER_TOP,
+        Alignment::Right => egui::Align2::RIGHT_TOP,
+    };
+    let text_position =
+        rect.min + egui::vec2(values.position.x() * scale, values.position.y() * scale);
+    painter.text(
+        text_position,
+        anchor,
+        &values.content,
+        egui::FontId::proportional((values.font_size * scale).max(1.0)),
+        color,
+    );
+
+    if (response.dragged() || response.clicked())
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        values.position = Position::new(
+            ((pointer.x - rect.left()) / scale).clamp(0.0, canvas.width() as f32),
+            ((pointer.y - rect.top()) / scale).clamp(0.0, canvas.height() as f32),
+        );
     }
 }
 
@@ -881,7 +1080,64 @@ mod tests {
     }
 
     #[test]
-    fn issue_5_and_8_controls_are_absent_from_the_adapter_state() {
+    fn text_editor_adds_updates_and_removes_through_the_coordinator() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut coordinator =
+            HeadlessCoordinator::empty(Store::at(directory.path().join("overlays.json")));
+        let overlay_id = coordinator
+            .create_overlay("Live", 320, 240)
+            .expect("create overlay");
+        coordinator.save().expect("establish clean state");
+
+        add_text_widget(&mut coordinator, overlay_id).expect("add text widget");
+        let widget = coordinator
+            .overlay(overlay_id)
+            .unwrap()
+            .text_widget()
+            .unwrap();
+        let widget_id = widget.id();
+        assert_eq!(widget.content(), "Text");
+        assert!(coordinator.is_dirty());
+
+        coordinator.save().expect("save added widget");
+        apply_text_editor_values(
+            &mut coordinator,
+            overlay_id,
+            TextEditorValues {
+                id: widget_id,
+                content: "Starting\nSoon".to_owned(),
+                position: Position::new(123.0, 45.0),
+                font_size: 42.0,
+                color: Color::rgba(10, 20, 30, 128),
+                alignment: Alignment::Center,
+            },
+        )
+        .expect("update all supported properties");
+        let widget = coordinator
+            .overlay(overlay_id)
+            .unwrap()
+            .text_widget()
+            .unwrap();
+        assert_eq!(widget.id(), widget_id);
+        assert_eq!(widget.content(), "Starting\nSoon");
+        assert_eq!(widget.position(), Position::new(123.0, 45.0));
+        assert_eq!(widget.font_size(), 42.0);
+        assert_eq!(widget.color(), Color::rgba(10, 20, 30, 128));
+        assert_eq!(widget.alignment(), Alignment::Center);
+        assert!(coordinator.is_dirty());
+
+        remove_text_widget(&mut coordinator, overlay_id, widget_id).expect("remove widget");
+        assert!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .text_widget()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn text_editor_controls_are_present_while_issue_8_controls_remain_absent() {
         let source = include_str!("gui.rs");
         let production = source
             .split("/// A small native-window-free semantic scenario harness")
@@ -890,7 +1146,10 @@ mod tests {
         assert!(!production.contains("copy_url_button"));
         assert!(!production.contains("open_url_button"));
         assert!(!production.contains("port_control"));
-        assert!(!production.contains("text_edit_multiline"));
+        assert!(production.contains("TextEdit::multiline"));
+        assert!(production.contains("Add text widget"));
+        assert!(production.contains("Remove text widget"));
+        assert!(production.contains("Canvas preview"));
         assert!(production.contains("Browser-source URL"));
         assert!(production.contains("Save"));
         assert!(production.contains("Confirm delete"));
