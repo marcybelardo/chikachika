@@ -30,6 +30,20 @@ The intended product scope and completion requirements are tracked in [`docs/TOD
 
 ## Setup
 
+### NixOS/Linux
+
+This repository includes a Linux-only Nix flake for development. It provides stable Rust, Cargo, rustfmt, rust-analyzer, Clippy, Node.js 22, Python 3, and the native GUI/OpenSSL libraries needed to build and run the application:
+
+```sh
+nix develop
+```
+
+Run the commands in the [test and checks](#test-and-checks) section from inside that shell. The flake currently supports `x86_64-linux` and `aarch64-linux`; it does not configure macOS.
+
+### Manual setup
+
+For environments that do not use the Nix shell:
+
 1. Install [Rust](https://www.rust-lang.org/tools/install) with the stable toolchain:
 
    ```sh
@@ -52,7 +66,7 @@ The intended product scope and completion requirements are tracked in [`docs/TOD
    cd chikachika
    ```
 
-3. On Ubuntu/Linux, install the native libraries used by the GUI build (these are the dependencies installed by CI):
+4. On Ubuntu/Linux outside the Nix shell, install the native libraries used by CI for the GUI build:
 
    ```sh
    sudo apt-get update
