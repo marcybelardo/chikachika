@@ -951,11 +951,10 @@ mod tests {
                 .send(server.shutdown())
                 .expect("report server shutdown result");
         });
-        let result = shutdown_receiver
+        shutdown_receiver
             .recv_timeout(Duration::from_secs(2))
             .expect("server shutdown did not finish with active SSE stream")
             .expect("server shuts down with active SSE stream");
-        assert_eq!(result, ());
 
         let rebound = start_on_port(address.port()).expect("released port can be rebound");
         rebound.shutdown().expect("stop rebound server");

@@ -10,7 +10,37 @@ use std::net::SocketAddr;
 
 use crate::model::{CanvasSize, ModelError, Overlay, OverlayId};
 use crate::persistence::{PersistenceError, Store};
-use crate::server::{self, HubError, OverlayHub, PublishResult, ServerError, ServerHandle};
+use crate::server::{HubError, OverlayHub, PublishResult, ServerError};
+
+/// The narrow hosting operations required by the application coordinator.
+///
+/// The production implementation is [`OverlayHub`]. Keeping this boundary
+/// small makes registration, publication, removal, and lookup failures
+/// deterministic in coordinator tests without coupling them to GUI code.
+pub trait HubOperations: Clone {
+    fn register_overlay(&self, overlay: Overlay) -> Result<(), HubError>;
+    fn publish_overlay(&self, overlay: &Overlay) -> Result<PublishResult, HubError>;
+    fn remove_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError>;
+    fn snapshot_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError>;
+}
+
+impl HubOperations for OverlayHub {
+    fn register_overlay(&self, overlay: Overlay) -> Result<(), HubError> {
+        self.register(overlay)
+    }
+
+    fn publish_overlay(&self, overlay: &Overlay) -> Result<PublishResult, HubError> {
+        self.publish(overlay)
+    }
+
+    fn remove_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+        self.remove(id)
+    }
+
+    fn snapshot_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+        self.snapshot(id)
+    }
+}
 
 /// Errors reported by application coordination operations.
 #[derive(Debug)]
@@ -19,10 +49,19 @@ pub enum CoordinatorError {
     Model(ModelError),
     Hub(HubError),
     Server(ServerError),
-    UnknownOverlay { id: OverlayId },
+    UnknownOverlay {
+        id: OverlayId,
+    },
     NoOverlaySelected,
     ConfirmationRequired,
     AlreadyRunning,
+    BootstrapCleanup {
+        primary: HubError,
+        cleanup: Vec<HubError>,
+    },
+    HubWorkspaceDivergence {
+        id: OverlayId,
+    },
 }
 
 /// Short alias for callers that prefer the application-oriented name.
@@ -37,8 +76,29 @@ impl fmt::Display for CoordinatorError {
             Self::Server(error) => error.fmt(formatter),
             Self::UnknownOverlay { id } => write!(formatter, "overlay {id} was not found"),
             Self::NoOverlaySelected => formatter.write_str("no overlay is selected"),
-            Self::ConfirmationRequired => formatter.write_str("overlay deletion requires confirmation"),
+            Self::ConfirmationRequired => {
+                formatter.write_str("overlay deletion requires confirmation")
+            }
             Self::AlreadyRunning => formatter.write_str("the local server is already running"),
+            Self::BootstrapCleanup { primary, cleanup } => {
+                write!(formatter, "could not restore overlays: {primary}")?;
+                formatter.write_str("; cleanup failed")?;
+                for (index, error) in cleanup.iter().enumerate() {
+                    if index == 0 {
+                        formatter.write_str(": ")?;
+                    } else {
+                        formatter.write_str(", ")?;
+                    }
+                    error.fmt(formatter)?;
+                }
+                Ok(())
+            }
+            Self::HubWorkspaceDivergence { id } => {
+                write!(
+                    formatter,
+                    "overlay {id} exists in the workspace but not in the hosting hub"
+                )
+            }
         }
     }
 }
@@ -53,7 +113,9 @@ impl Error for CoordinatorError {
             Self::UnknownOverlay { .. }
             | Self::NoOverlaySelected
             | Self::ConfirmationRequired
-            | Self::AlreadyRunning => None,
+            | Self::AlreadyRunning
+            | Self::BootstrapCleanup { .. }
+            | Self::HubWorkspaceDivergence { .. } => None,
         }
     }
 }
@@ -85,19 +147,19 @@ impl From<ServerError> for CoordinatorError {
 /// The result of loading application state before the GUI starts.
 ///
 /// A blocked result retains the store and the original error so a UI can
-/// display the failure and offer retry/recovery without silently replacing the
-/// source with an empty workspace.
+/// display the failure and require source repair plus an application restart
+/// without silently replacing the source with an empty workspace.
 pub enum BootstrapOutcome {
     /// The persisted snapshot was validated and is ready for use.
-    Ready(HeadlessCoordinator),
-    /// Startup is blocked until the bootstrap failure is acknowledged or
-    /// resolved.
+    Ready(HeadlessCoordinator<OverlayHub>),
+    /// Startup is blocked until the source is repaired and the application is
+    /// restarted.
     Blocked(BootstrapFailure),
 }
 
 impl BootstrapOutcome {
     /// Returns the loaded coordinator when startup succeeded.
-    pub fn into_coordinator(self) -> Option<HeadlessCoordinator> {
+    pub fn into_coordinator(self) -> Option<HeadlessCoordinator<OverlayHub>> {
         match self {
             Self::Ready(coordinator) => Some(coordinator),
             Self::Blocked(_) => None,
@@ -111,27 +173,30 @@ impl BootstrapOutcome {
             Self::Blocked(failure) => Some(failure),
         }
     }
-
-    /// Retries loading the retained store after a recovery action.
-    pub fn retry(self) -> Result<HeadlessCoordinator, CoordinatorError> {
-        match self {
-            Self::Ready(coordinator) => Ok(coordinator),
-            Self::Blocked(failure) => HeadlessCoordinator::bootstrap(failure.into_store()),
-        }
-    }
 }
 
 /// A non-destructive failure that blocks application bootstrap.
 #[derive(Debug)]
 pub struct BootstrapFailure {
-    store: Store,
+    store: Option<Store>,
     error: CoordinatorError,
 }
 
 impl BootstrapFailure {
-    /// Returns the store that can be retried after a recovery action.
-    pub fn store(&self) -> &Store {
-        &self.store
+    /// Constructs a blocked state for a failure that happened before a store
+    /// could be resolved. No path is fabricated, so this state cannot offer a
+    /// recovery or Save action against an unrelated file.
+    pub(crate) fn without_store(error: PersistenceError) -> Self {
+        Self {
+            store: None,
+            error: CoordinatorError::Persistence(error),
+        }
+    }
+
+    /// Returns the retained source store when path resolution succeeded. The
+    /// GUI uses this only to identify which source must be repaired before restart.
+    pub fn store(&self) -> Option<&Store> {
+        self.store.as_ref()
     }
 
     /// Returns the underlying failure for visible presentation.
@@ -145,10 +210,6 @@ impl BootstrapFailure {
             CoordinatorError::Persistence(error) => Some(error),
             _ => None,
         }
-    }
-
-    fn into_store(self) -> Store {
-        self.store
     }
 }
 
@@ -167,24 +228,24 @@ impl Error for BootstrapFailure {
 /// The application state shared by the GUI and browser-serving adapters.
 ///
 /// Construction loads and validates the complete persisted snapshot before a
-/// coordinator is returned.  The server is optional until [`Self::start`] has
-/// received a successful bind/readiness result; consequently URL access is
-/// unavailable before the server is actually ready.
-pub struct HeadlessCoordinator {
+/// coordinator is returned. The top-level runtime owns the server handle; this
+/// coordinator retains only the successful bind/readiness address, so URL access
+/// is unavailable before the server is actually ready.
+pub struct HeadlessCoordinator<H: HubOperations = OverlayHub> {
     store: Store,
     overlays: Vec<Overlay>,
     selected: Option<OverlayId>,
-    hub: OverlayHub,
-    server: Option<ServerHandle>,
+    hub: H,
     server_address: Option<SocketAddr>,
     dirty: bool,
-    last_error: Option<String>,
+    operation_error: Option<String>,
+    server_error: Option<String>,
 }
 
 /// Alias for code that calls the coordinator the application state.
-pub type AppCoordinator = HeadlessCoordinator;
+pub type AppCoordinator = HeadlessCoordinator<OverlayHub>;
 
-impl HeadlessCoordinator {
+impl HeadlessCoordinator<OverlayHub> {
     /// Loads persisted overlays and prepares a coordinator without starting a
     /// server. Any persistence or model validation error blocks bootstrap and
     /// leaves the source file untouched.
@@ -203,12 +264,12 @@ impl HeadlessCoordinator {
             Ok(overlays) => match Self::from_overlays(store, overlays) {
                 Ok(coordinator) => BootstrapOutcome::Ready(coordinator),
                 Err(error) => BootstrapOutcome::Blocked(BootstrapFailure {
-                    store: retained_store,
+                    store: Some(retained_store),
                     error,
                 }),
             },
             Err(error) => BootstrapOutcome::Blocked(BootstrapFailure {
-                store: retained_store,
+                store: Some(retained_store),
                 error: CoordinatorError::Persistence(error),
             }),
         }
@@ -219,7 +280,7 @@ impl HeadlessCoordinator {
         Self::bootstrap(store)
     }
 
-    /// Creates an empty coordinator for a store.  This is useful for a new
+    /// Creates an empty coordinator for a store. This is useful for a new
     /// installation and deterministic tests; it does not perform file I/O.
     pub fn empty(store: Store) -> Self {
         Self {
@@ -227,23 +288,53 @@ impl HeadlessCoordinator {
             overlays: Vec::new(),
             selected: None,
             hub: OverlayHub::new(),
-            server: None,
             server_address: None,
             dirty: false,
-            last_error: None,
+            operation_error: None,
+            server_error: None,
         }
     }
 
-    /// Builds a coordinator from an already loaded snapshot.
-    ///
-    /// Each overlay is registered before the coordinator is returned, so the
-    /// in-memory list and browser hub cannot begin in a partially restored
-    /// state.
+    /// Builds a coordinator from an already loaded snapshot using a fresh
+    /// production hosting hub.
     pub fn from_overlays(store: Store, overlays: Vec<Overlay>) -> Result<Self, CoordinatorError> {
-        let hub = OverlayHub::new();
+        Self::from_overlays_with_hub(store, overlays, OverlayHub::new())
+    }
+}
+
+impl<H: HubOperations> HeadlessCoordinator<H> {
+    /// Records the address reported by a successfully bound server. The
+    /// top-level runtime owns the server handle; the coordinator retains only
+    /// this readiness metadata for URL presentation.
+    pub fn set_server_address(&mut self, address: SocketAddr) {
+        self.server_address = Some(address);
+        self.server_error = None;
+    }
+
+    /// Builds a coordinator from an already loaded snapshot using an injected
+    /// hub implementation. Every registration happens before the coordinator
+    /// becomes visible. If registration fails, all IDs registered by this
+    /// attempt are removed on a best-effort basis and cleanup failures remain
+    /// attached to the primary error.
+    pub fn from_overlays_with_hub(
+        store: Store,
+        overlays: Vec<Overlay>,
+        hub: H,
+    ) -> Result<Self, CoordinatorError> {
+        let mut registered = Vec::with_capacity(overlays.len());
         for overlay in &overlays {
-            hub.register(overlay.clone())
-                .map_err(CoordinatorError::Hub)?;
+            if let Err(primary) = hub.register_overlay(overlay.clone()) {
+                let cleanup = registered
+                    .into_iter()
+                    .filter_map(|id| hub.remove_overlay(id).err())
+                    .collect::<Vec<_>>();
+                return Err(if cleanup.is_empty() {
+                    CoordinatorError::Hub(primary)
+                } else {
+                    CoordinatorError::BootstrapCleanup { primary, cleanup }
+                });
+            }
+            registered.push(overlay.id());
         }
 
         let selected = overlays.first().map(Overlay::id);
@@ -252,10 +343,10 @@ impl HeadlessCoordinator {
             overlays,
             selected,
             hub,
-            server: None,
             server_address: None,
             dirty: false,
-            last_error: None,
+            operation_error: None,
+            server_error: None,
         })
     }
 
@@ -265,7 +356,7 @@ impl HeadlessCoordinator {
     }
 
     /// Returns the shared hub used by the server and future editor adapters.
-    pub fn hub(&self) -> OverlayHub {
+    pub fn hub(&self) -> H {
         self.hub.clone()
     }
 
@@ -301,7 +392,13 @@ impl HeadlessCoordinator {
             return Err(self.reject(CoordinatorError::UnknownOverlay { id }));
         }
         self.selected = Some(id);
+        self.operation_error = None;
         Ok(())
+    }
+
+    /// Short application-facing alias for selecting an overlay.
+    pub fn select(&mut self, id: OverlayId) -> Result<(), CoordinatorError> {
+        self.select_overlay(id)
     }
 
     /// Returns whether a successful mutation has not yet been saved.
@@ -314,50 +411,36 @@ impl HeadlessCoordinator {
         self.is_dirty()
     }
 
-    /// Returns the latest user-visible error message, if one was recorded.
+    /// Returns the latest user-visible operation error, or the persistent server
+    /// startup error when no operation error is active.
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        self.operation_error
+            .as_deref()
+            .or(self.server_error.as_deref())
     }
 
-    /// Clears the latest recorded error after the UI has acknowledged it.
+    /// Returns a persistent server startup error, if the local server is unavailable.
+    pub fn server_error(&self) -> Option<&str> {
+        self.server_error.as_deref()
+    }
+
+    /// Returns a transient operation error, if the latest action failed.
+    pub fn operation_error(&self) -> Option<&str> {
+        self.operation_error.as_deref()
+    }
+
+    /// Clears the latest transient operation error after the UI has acknowledged it.
     pub fn clear_last_error(&mut self) {
-        self.last_error = None;
+        self.operation_error = None;
     }
 
-    /// Starts the default loopback server and waits for its readiness result.
-    ///
-    /// If binding fails, the coordinator remains stopped and all restored or
-    /// edited overlay state remains available to the caller.
-    pub fn start(&mut self) -> Result<(), CoordinatorError> {
-        self.start_with(server::start_with_hub)
+    /// Records a persistent server startup failure while retaining the loaded workspace.
+    pub fn record_server_error(&mut self, error: ServerError) {
+        self.server_error = Some(CoordinatorError::Server(error).to_string());
     }
 
-    /// Starts the server through an injected starter.  The seam is useful for
-    /// lifecycle tests and keeps production port selection in `server.rs`.
-    pub fn start_with<F>(&mut self, start_server: F) -> Result<(), CoordinatorError>
-    where
-        F: FnOnce(OverlayHub) -> Result<ServerHandle, ServerError>,
-    {
-        if self.server.is_some() {
-            return Err(self.reject(CoordinatorError::AlreadyRunning));
-        }
-
-        match start_server(self.hub.clone()) {
-            Ok(server) => {
-                self.server_address = Some(server.local_addr());
-                self.server = Some(server);
-                Ok(())
-            }
-            Err(error) => Err(self.reject(CoordinatorError::Server(error))),
-        }
-    }
-
-    /// Returns whether the loopback server has completed startup.
-    pub fn is_running(&self) -> bool {
-        self.server.is_some()
-    }
-
-    /// Returns the bound address only after server startup has completed.
+    /// Returns the bound address only after the top-level server startup has
+    /// completed successfully and reported readiness.
     pub const fn server_address(&self) -> Option<SocketAddr> {
         self.server_address
     }
@@ -372,26 +455,17 @@ impl HeadlessCoordinator {
     pub fn selected_url(&self) -> Option<String> {
         let address = self.server_address?;
         let id = self.selected?;
+        let overlay = self.overlay(id)?;
+        let hosted = self.hub.snapshot_overlay(id).ok().flatten()?;
+        if hosted != *overlay {
+            return None;
+        }
         Some(format!("http://{address}/overlay/{id}"))
     }
 
     /// Alias for [`Self::selected_url`].
     pub fn browser_source_url(&self) -> Option<String> {
         self.selected_url()
-    }
-
-    /// Gracefully stops the server and joins its dedicated thread.  Stopping
-    /// always clears readiness state, including when joining reports an error.
-    pub fn shutdown(&mut self) -> Result<(), CoordinatorError> {
-        self.server_address = None;
-        let Some(server) = self.server.take() else {
-            return Ok(());
-        };
-
-        match server.shutdown() {
-            Ok(()) => Ok(()),
-            Err(error) => Err(self.reject(CoordinatorError::Server(error))),
-        }
     }
 
     /// Creates, registers, selects, and marks a new overlay dirty.
@@ -401,7 +475,11 @@ impl HeadlessCoordinator {
         width: u32,
         height: u32,
     ) -> Result<OverlayId, CoordinatorError> {
-        self.create_overlay_with_canvas(name, CanvasSize::new(width, height)?)
+        let canvas = match CanvasSize::new(width, height) {
+            Ok(canvas) => canvas,
+            Err(error) => return Err(self.reject(CoordinatorError::Model(error))),
+        };
+        self.create_overlay_with_canvas(name, canvas)
     }
 
     /// Creates an overlay using an already validated canvas size.
@@ -415,12 +493,13 @@ impl HeadlessCoordinator {
             Err(error) => return Err(self.reject(CoordinatorError::Model(error))),
         };
         let id = overlay.id();
-        if let Err(error) = self.hub.register(overlay.clone()) {
+        if let Err(error) = self.hub.register_overlay(overlay.clone()) {
             return Err(self.reject(CoordinatorError::Hub(error)));
         }
         self.overlays.push(overlay);
         self.selected = Some(id);
         self.dirty = true;
+        self.operation_error = None;
         Ok(id)
     }
 
@@ -443,11 +522,7 @@ impl HeadlessCoordinator {
 
     /// Applies a model mutation, publishes it to the hub, and marks the
     /// document dirty only when the mutation changes the model.
-    pub fn update_overlay<F>(
-        &mut self,
-        id: OverlayId,
-        mutate: F,
-    ) -> Result<(), CoordinatorError>
+    pub fn update_overlay<F>(&mut self, id: OverlayId, mutate: F) -> Result<(), CoordinatorError>
     where
         F: FnOnce(&mut Overlay) -> Result<(), ModelError>,
     {
@@ -461,16 +536,27 @@ impl HeadlessCoordinator {
             return Err(self.reject(CoordinatorError::Model(error)));
         }
         if updated == current {
+            self.operation_error = None;
             return Ok(());
         }
 
-        match self.hub.publish(&updated) {
+        match self.hub.publish_overlay(&updated) {
             Ok(PublishResult::Published) => {
                 self.overlays[index] = updated;
                 self.dirty = true;
+                self.operation_error = None;
                 Ok(())
             }
-            Ok(PublishResult::Unchanged) => Ok(()),
+            Ok(PublishResult::Unchanged) => match self.hub.snapshot_overlay(id) {
+                Ok(Some(snapshot)) if snapshot == updated => {
+                    self.overlays[index] = updated;
+                    self.dirty = true;
+                    self.operation_error = None;
+                    Ok(())
+                }
+                Ok(_) => Err(self.reject(CoordinatorError::HubWorkspaceDivergence { id })),
+                Err(error) => Err(self.reject(CoordinatorError::Hub(error))),
+            },
             Err(error) => Err(self.reject(CoordinatorError::Hub(error))),
         }
     }
@@ -488,20 +574,19 @@ impl HeadlessCoordinator {
             return Err(self.reject(CoordinatorError::UnknownOverlay { id }));
         };
 
-        match self.hub.remove(id) {
+        match self.hub.remove_overlay(id) {
             Ok(Some(_)) => {}
-            Ok(None) => return Err(self.reject(CoordinatorError::UnknownOverlay { id })),
+            Ok(None) => {
+                return Err(self.reject(CoordinatorError::HubWorkspaceDivergence { id }));
+            }
             Err(error) => return Err(self.reject(CoordinatorError::Hub(error))),
         }
         self.overlays.remove(index);
         if self.selected == Some(id) {
-            self.selected = self
-                .overlays
-                .get(index)
-                .or_else(|| self.overlays.last())
-                .map(Overlay::id);
+            self.selected = self.overlays.first().map(Overlay::id);
         }
         self.dirty = true;
+        self.operation_error = None;
         Ok(())
     }
 
@@ -521,6 +606,7 @@ impl HeadlessCoordinator {
             return Err(self.reject(error));
         }
         self.dirty = false;
+        self.operation_error = None;
         Ok(())
     }
 
@@ -533,16 +619,8 @@ impl HeadlessCoordinator {
     }
 
     fn reject(&mut self, error: CoordinatorError) -> CoordinatorError {
-        self.last_error = Some(error.to_string());
+        self.operation_error = Some(error.to_string());
         error
-    }
-}
-
-impl Drop for HeadlessCoordinator {
-    fn drop(&mut self) {
-        // `ServerHandle`'s Drop implementation signals the server.  Explicit
-        // shutdown remains the normal path because it also joins the thread.
-        let _ = self.server.take();
     }
 }
 
@@ -567,11 +645,14 @@ mod tests {
         persistence::save(&path, &[original.clone()]).expect("persist overlay");
 
         let app = coordinator(&path);
-        assert_eq!(app.overlays(), &[original]);
+        assert_eq!(app.overlays(), std::slice::from_ref(&original));
         assert_eq!(app.selected_overlay_id(), Some(original.id()));
-        assert!(!app.is_running());
+        assert_eq!(app.server_address(), None);
         assert_eq!(app.selected_url(), None);
-        assert_eq!(app.hub().snapshot(original.id()).expect("hub lock"), Some(original));
+        assert_eq!(
+            app.hub().snapshot(original.id()).expect("hub lock"),
+            Some(original)
+        );
     }
 
     #[test]
@@ -580,7 +661,9 @@ mod tests {
         let path = directory.path().join("overlays.json");
         let mut app = coordinator(&path);
 
-        let id = app.create_overlay("Starting Soon", 1920, 1080).expect("create");
+        let id = app
+            .create_overlay("Starting Soon", 1920, 1080)
+            .expect("create");
         assert!(app.is_dirty());
         assert_eq!(app.selected_overlay_id(), Some(id));
         assert!(matches!(
@@ -599,9 +682,11 @@ mod tests {
     #[test]
     fn failed_save_keeps_dirty_state_and_records_visible_error() {
         let directory = tempfile::tempdir().expect("temporary directory");
+        let source_path = directory.path().join("overlays.json");
+        let mut app = coordinator(&source_path);
         let path = directory.path().join("existing-directory");
         fs::create_dir(&path).expect("destination directory");
-        let mut app = coordinator(&path);
+        app.store = Store::at(&path);
         app.create_overlay("Unsaved", 320, 240).expect("create");
 
         let result = app.save();
@@ -609,6 +694,50 @@ mod tests {
         assert!(app.is_dirty());
         assert!(app.last_error().is_some());
         assert_eq!(app.overlays()[0].name(), "Unsaved");
+
+        app.store = Store::at(directory.path().join("recovered.json"));
+        app.save().expect("retry save");
+        assert!(app.operation_error().is_none());
+        assert!(app.last_error().is_none());
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn successful_no_op_clears_previous_operation_error() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut app = coordinator(&directory.path().join("overlays.json"));
+        let id = app.create_overlay("Live", 320, 240).expect("create");
+        assert!(app.rename_overlay(id, "").is_err());
+        assert!(app.last_error().is_some());
+        app.rename_overlay(id, "Live").expect("same-name rename");
+        assert!(app.last_error().is_none());
+    }
+
+    #[test]
+    fn server_error_remains_visible_until_server_reports_readiness() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut app = coordinator(&directory.path().join("overlays.json"));
+        app.record_server_error(ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "occupied",
+        )));
+        assert!(app.last_error().unwrap().contains("occupied"));
+        app.create_overlay("Live", 320, 240).expect("create");
+        assert!(app.last_error().unwrap().contains("occupied"));
+        app.set_server_address("127.0.0.1:51737".parse().expect("address"));
+        assert!(app.server_error().is_none());
+        assert!(app.last_error().is_none());
+    }
+
+    #[test]
+    fn selected_url_is_suppressed_when_hub_and_workspace_diverge() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut app = coordinator(&directory.path().join("overlays.json"));
+        let id = app.create_overlay("Live", 320, 240).expect("create");
+        app.set_server_address("127.0.0.1:51737".parse().expect("address"));
+        assert!(app.selected_url().is_some());
+        app.hub().remove(id).expect("remove from hub");
+        assert!(app.selected_url().is_none());
     }
 
     #[test]
@@ -618,26 +747,21 @@ mod tests {
         let mut app = coordinator(&path);
         let id = app.create_overlay("Live", 320, 240).expect("create");
 
-        let failure = app.start_with(|_hub| {
-            Err(ServerError::Bind(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                "occupied",
-            )))
-        });
-        assert!(matches!(failure, Err(CoordinatorError::Server(_))));
-        assert!(!app.is_running());
+        let failure = Err::<server::ServerHandle, _>(ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "occupied",
+        )));
+        assert!(matches!(failure, Err(ServerError::Bind(_))));
+        assert_eq!(app.server_address(), None);
         assert_eq!(app.selected_url(), None);
         assert_eq!(app.selected_overlay_id(), Some(id));
 
-        app.start_with(|hub| server::start_on_port_with_hub(0, hub))
-            .expect("start ephemeral server");
-        let address = app.server_address().expect("ready address");
+        let server = server::start_on_port_with_hub(0, app.hub()).expect("start ephemeral server");
+        let address = server.local_addr();
+        app.set_server_address(address);
         let url = app.selected_url().expect("ready selected URL");
-        assert!(url.starts_with(&format!("http://{address}/overlay/")));
-        assert!(url.ends_with(&id.to_string()));
-        app.shutdown().expect("shutdown server");
-        assert_eq!(app.server_address(), None);
-        assert_eq!(app.selected_url(), None);
+        assert_eq!(url, format!("http://{address}/overlay/{id}"));
+        server.shutdown().expect("shutdown server");
     }
 
     #[test]
@@ -647,8 +771,125 @@ mod tests {
         let source = br"not json";
         fs::write(&path, source).expect("malformed source");
 
-        let result = HeadlessCoordinator::bootstrap(Store::at(&path));
+        let result = HeadlessCoordinator::<OverlayHub>::bootstrap(Store::at(&path));
         assert!(matches!(result, Err(CoordinatorError::Persistence(_))));
         assert_eq!(fs::read(&path).expect("source remains"), source.as_slice());
+    }
+
+    #[test]
+    fn app_local_resolution_failure_is_blocked_without_store_or_retry() {
+        let failure =
+            BootstrapFailure::without_store(PersistenceError::AppLocalDirectoryUnavailable);
+        assert!(failure.store().is_none());
+        assert!(failure.persistence_error().is_some());
+        assert_eq!(
+            failure.error().to_string(),
+            "the platform app-local data directory is unavailable"
+        );
+        assert!(failure.store().is_none());
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedHub {
+        state: std::sync::Arc<std::sync::Mutex<ScriptedHubState>>,
+    }
+
+    #[derive(Default)]
+    struct ScriptedHubState {
+        overlays: std::collections::HashMap<OverlayId, Overlay>,
+        register_calls: usize,
+        fail_register_at: Option<usize>,
+        fail_cleanup: bool,
+    }
+
+    impl HubOperations for ScriptedHub {
+        fn register_overlay(&self, overlay: Overlay) -> Result<(), HubError> {
+            let mut state = self.state.lock().expect("scripted hub lock");
+            state.register_calls += 1;
+            if state.fail_register_at == Some(state.register_calls) {
+                return Err(HubError::Unknown { id: overlay.id() });
+            }
+            state.overlays.insert(overlay.id(), overlay);
+            Ok(())
+        }
+
+        fn publish_overlay(&self, overlay: &Overlay) -> Result<PublishResult, HubError> {
+            let mut state = self.state.lock().expect("scripted hub lock");
+            let Some(current) = state.overlays.get_mut(&overlay.id()) else {
+                return Err(HubError::Unknown { id: overlay.id() });
+            };
+            *current = overlay.clone();
+            Ok(PublishResult::Published)
+        }
+
+        fn remove_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+            let mut state = self.state.lock().expect("scripted hub lock");
+            if state.fail_cleanup {
+                return Err(HubError::Unknown { id });
+            }
+            Ok(state.overlays.remove(&id))
+        }
+
+        fn snapshot_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+            Ok(self
+                .state
+                .lock()
+                .expect("scripted hub lock")
+                .overlays
+                .get(&id)
+                .cloned())
+        }
+    }
+
+    #[test]
+    fn bootstrap_partial_registration_failure_cleans_attempt_entries() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let first = Overlay::with_dimensions("First", 320, 240).expect("first overlay");
+        let second = Overlay::with_dimensions("Second", 320, 240).expect("second overlay");
+        let hub = ScriptedHub::default();
+        hub.state
+            .lock()
+            .expect("scripted hub lock")
+            .fail_register_at = Some(2);
+
+        let result = HeadlessCoordinator::from_overlays_with_hub(
+            Store::at(directory.path().join("overlays.json")),
+            vec![first.clone(), second],
+            hub.clone(),
+        );
+        assert!(matches!(
+            result,
+            Err(CoordinatorError::Hub(HubError::Unknown { .. }))
+        ));
+        assert!(
+            hub.snapshot_overlay(first.id())
+                .expect("scripted snapshot")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bootstrap_cleanup_failure_retains_primary_and_reports_cleanup_errors() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let first = Overlay::with_dimensions("First", 320, 240).expect("first overlay");
+        let second = Overlay::with_dimensions("Second", 320, 240).expect("second overlay");
+        let hub = ScriptedHub::default();
+        {
+            let mut state = hub.state.lock().expect("scripted hub lock");
+            state.fail_register_at = Some(2);
+            state.fail_cleanup = true;
+        }
+
+        let result = HeadlessCoordinator::from_overlays_with_hub(
+            Store::at(directory.path().join("overlays.json")),
+            vec![first, second],
+            hub,
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("bootstrap must fail"),
+        };
+        assert!(matches!(error, CoordinatorError::BootstrapCleanup { .. }));
+        assert!(error.to_string().contains("cleanup failed"));
     }
 }

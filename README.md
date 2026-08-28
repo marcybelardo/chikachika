@@ -26,7 +26,7 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 - Treat a missing store as an empty workspace; do not silently replace malformed or unsupported data with an empty file.
 - Keep persistence and server readiness state visible while startup is incomplete or fails; do not expose a browser-source URL until the server is ready and an overlay is selected and registered.
 - Save the complete overlay collection through the versioned store after workspace changes. A successful save clears the pending change; a failed save keeps the in-memory change and dirty state, preserves the prior file, and displays a recoverable error.
-- Keep startup, load, save, and shutdown failures visible and non-destructive so a user can retry or recover without losing in-memory work or persisted data.
+- Keep startup, load, save, and shutdown failures visible and non-destructive so a user can recover without losing in-memory work or persisted data; malformed startup sources require repair and restart.
 - Preserve each overlay's stable identity and browser-source URL across renames and application restarts.
 
 Still pending beyond issue #4:

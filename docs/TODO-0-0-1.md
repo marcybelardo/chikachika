@@ -16,7 +16,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 - [ ] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux. *(Target-platform validation remains pending.)*
 - [x] Startup restores and validates the complete versioned app-local overlay snapshot before presenting a usable workspace; a missing store starts an empty collection.
-- [x] Malformed or unsupported saved data blocks restoration without replacing the source file, and the failure remains visible and non-destructive.
+- [x] Malformed or unsupported saved data blocks restoration without replacing the source file, and the failure remains visible and non-destructive; source repair requires an application restart.
 - [x] The workspace lists and selects overlays while preserving stable selection state independently of dirty/save state.
 - [x] A user can create an overlay, which becomes selected and dirty until successfully saved.
 - [x] A user can rename an overlay without changing its stable identity or browser-source URL.

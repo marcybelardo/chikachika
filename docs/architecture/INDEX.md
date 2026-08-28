@@ -26,10 +26,10 @@ The browser adapter in `src/browser.rs` projects model snapshots into one serial
 
 The issue #4 workspace boundary is implemented across the application coordinator and native GUI. The coordinator owns the application overlay collection, selected-overlay state, dirty state, and latest user-visible error while using the existing model, persistence store, and hosting hub as adapters rather than maintaining duplicate document state:
 
-- Startup restores and validates the complete versioned app-local snapshot before presenting a usable workspace. A missing file starts an empty collection; malformed or unsupported data blocks restoration without replacing the source file.
+- Startup restores and validates the complete versioned app-local snapshot before presenting a usable workspace. A missing file starts an empty collection; malformed or unsupported data blocks restoration without replacing the source file and requires source repair plus restart.
 - The workspace lists, selects, creates, renames, and deletes overlays only after explicit confirmation. Mutations preserve stable overlay identities and publish registered changes through the shared hub.
 - Saving writes a complete collection snapshot. A successful save clears dirty state; a failed save keeps the in-memory change and dirty state, preserves the previous source, and records a visible recoverable error.
-- Server startup and persistence failures remain visible and non-destructive. The workspace exposes a browser-source URL only after the server has reported readiness and an overlay is selected and registered; normal shutdown coordinates with the server thread.
+- Server startup and persistence failures remain visible and non-destructive. A server bind failure leaves the loaded workspace saveable without exposing a URL; the workspace exposes a browser-source URL only after the server has reported readiness and an overlay is selected and registered; normal shutdown coordinates with the server thread.
 
 This boundary deliberately leaves native text-widget editing to issue #5 and browser-source copy/open controls plus configurable-port UX to issue #8. OBS end-to-end validation on macOS and Linux, broader platform validation, and representative idle CPU/memory measurements remain pending.
 
@@ -47,4 +47,4 @@ Authoritative sources:
 - [`ADR-003`](../adr/ADR-003-versioned-app-local-json-persistence.md)
 - [`ADR-004`](../adr/ADR-004-loopback-sse-browser-delivery.md)
 
-Current limitations: the native GUI does not yet manage overlays or consume the model/persistence adapters; application startup does not restore persisted overlays or register them with the hub; stable URL copy/open controls, GUI-driven live browser updates, OBS validation, and platform resource measurements remain unimplemented or unverified.
+Current limitations: stable URL copy/open controls, GUI-driven live browser updates, OBS validation, and platform resource measurements remain unimplemented or unverified. Native text-widget editing remains intentionally deferred to issue #5.
