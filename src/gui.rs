@@ -20,6 +20,14 @@ struct TransientState {
     rename_name: String,
     delete_target: Option<OverlayId>,
     dialog_error: Option<String>,
+    preview_drag: Option<PreviewDrag>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreviewDrag {
+    overlay_id: OverlayId,
+    widget_id: TextWidgetId,
+    pointer_offset: egui::Vec2,
 }
 
 /// The native application adapter.
@@ -177,6 +185,8 @@ impl ChikachikaApp {
             "Delete" => self.open_delete(),
             "Confirm delete" => self.confirm_delete(),
             "Save" => self.save_workspace(),
+            "Add text widget" => add_selected_text_widget(self.coordinator.as_mut()),
+            "Remove text widget" => remove_selected_text_widget(self.coordinator.as_mut()),
             other => self.select_named(other),
         }
     }
@@ -248,6 +258,7 @@ impl ChikachikaApp {
                 ui.heading("Overlay details");
                 ui.separator();
                 let Some(overlay) = coordinator.selected_overlay() else {
+                    transient.preview_drag = None;
                     ui.label(
                         "Select an overlay or use Create overlay to make your first workspace.",
                     );
@@ -272,7 +283,7 @@ impl ChikachikaApp {
                     }
                 });
                 ui.add_space(8.0);
-                render_text_editor(ui, coordinator, id);
+                render_text_editor(ui, coordinator, transient, id);
                 ui.add_space(8.0);
                 ui.label("Browser-source URL");
                 if let Some(url) = coordinator.selected_url() {
@@ -329,6 +340,31 @@ impl TextEditorValues {
     }
 }
 
+#[cfg(test)]
+fn add_selected_text_widget(coordinator: Option<&mut HeadlessCoordinator>) -> Result<(), String> {
+    let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
+    let overlay_id = coordinator
+        .selected_overlay_id()
+        .ok_or_else(|| "no overlay is selected".to_owned())?;
+    add_text_widget(coordinator, overlay_id)
+}
+
+#[cfg(test)]
+fn remove_selected_text_widget(
+    coordinator: Option<&mut HeadlessCoordinator>,
+) -> Result<(), String> {
+    let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
+    let overlay = coordinator
+        .selected_overlay()
+        .ok_or_else(|| "no overlay is selected".to_owned())?;
+    let overlay_id = overlay.id();
+    let widget_id = overlay
+        .text_widget()
+        .ok_or_else(|| "no text widget exists".to_owned())?
+        .id();
+    remove_text_widget(coordinator, overlay_id, widget_id)
+}
+
 fn add_text_widget(
     coordinator: &mut HeadlessCoordinator,
     overlay_id: OverlayId,
@@ -373,14 +409,17 @@ fn apply_text_editor_values(
 fn render_text_editor(
     ui: &mut egui::Ui,
     coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
     overlay_id: OverlayId,
 ) {
     ui.heading("Text widget");
     let Some(overlay) = coordinator.overlay(overlay_id) else {
+        transient.preview_drag = None;
         return;
     };
     let canvas = overlay.canvas();
     let Some(widget) = overlay.text_widget() else {
+        transient.preview_drag = None;
         ui.label("This overlay has no text widget.");
         if ui.button("Add text widget").clicked() {
             let _ = add_text_widget(coordinator, overlay_id);
@@ -389,6 +428,9 @@ fn render_text_editor(
     };
     let mut values = TextEditorValues::from_widget(widget);
     let original = values.clone();
+    if !drag_matches(transient.preview_drag, overlay_id, values.id) {
+        transient.preview_drag = None;
+    }
 
     if ui.button("Remove text widget").clicked() {
         let _ = remove_text_widget(coordinator, overlay_id, values.id);
@@ -405,7 +447,6 @@ fn render_text_editor(
         ui.label("Font size");
         ui.add(
             egui::DragValue::new(&mut values.font_size)
-                .range(1.0..=512.0)
                 .speed(0.5)
                 .suffix(" px"),
         );
@@ -438,32 +479,118 @@ fn render_text_editor(
     });
 
     ui.label("Canvas preview — drag to move the text widget");
-    render_canvas_preview(ui, canvas, &mut values);
+    render_canvas_preview(
+        ui,
+        canvas,
+        overlay_id,
+        &mut values,
+        &mut transient.preview_drag,
+    );
 
     if values != original {
         let _ = apply_text_editor_values(coordinator, overlay_id, values);
     }
 }
 
+const PREVIEW_MAX_HEIGHT: f32 = 360.0;
+const PREVIEW_MIN_HANDLE: f32 = 12.0;
+const PREVIEW_MAX_PAINT_FONT: f32 = 512.0;
+
+fn preview_scale(canvas: crate::model::CanvasSize, available_width: f32) -> f32 {
+    (available_width.max(1.0) / canvas.width() as f32)
+        .min(PREVIEW_MAX_HEIGHT / canvas.height() as f32)
+        .min(1.0)
+}
+
+fn canvas_to_preview(origin: egui::Pos2, position: Position, scale: f32) -> egui::Pos2 {
+    origin + egui::vec2(position.x() * scale, position.y() * scale)
+}
+
+fn preview_to_canvas(
+    origin: egui::Pos2,
+    pointer: egui::Pos2,
+    pointer_offset: egui::Vec2,
+    scale: f32,
+    canvas: crate::model::CanvasSize,
+) -> Position {
+    let top_left = pointer - pointer_offset;
+    Position::new(
+        ((top_left.x - origin.x) / scale).clamp(0.0, canvas.width() as f32),
+        ((top_left.y - origin.y) / scale).clamp(0.0, canvas.height() as f32),
+    )
+}
+
+fn alignment_to_egui(alignment: Alignment) -> egui::Align {
+    match alignment {
+        Alignment::Left => egui::Align::LEFT,
+        Alignment::Center => egui::Align::Center,
+        Alignment::Right => egui::Align::RIGHT,
+    }
+}
+
+fn aligned_paint_origin(
+    region_origin: egui::Pos2,
+    region_width: f32,
+    alignment: Alignment,
+) -> egui::Pos2 {
+    let offset = match alignment {
+        Alignment::Left => 0.0,
+        Alignment::Center => region_width / 2.0,
+        Alignment::Right => region_width,
+    };
+    region_origin + egui::vec2(offset, 0.0)
+}
+
+fn text_region_rect(
+    canvas_rect: egui::Rect,
+    position: Position,
+    scale: f32,
+    text_height: f32,
+) -> egui::Rect {
+    let origin = canvas_to_preview(canvas_rect.min, position, scale);
+    egui::Rect::from_min_max(
+        origin,
+        egui::pos2(canvas_rect.right(), origin.y + text_height),
+    )
+}
+
+fn widget_hitbox(
+    canvas_rect: egui::Rect,
+    widget_origin: egui::Pos2,
+    visual_rect: egui::Rect,
+) -> egui::Rect {
+    let fallback = egui::Rect::from_min_size(widget_origin, egui::Vec2::splat(PREVIEW_MIN_HANDLE));
+    let hitbox = if visual_rect.is_positive() {
+        visual_rect
+    } else {
+        fallback
+    };
+    // Empty text and text fully clipped at the canvas edge have no glyph bounds,
+    // so the editor exposes a small handle at the model's top-left position.
+    hitbox.intersect(canvas_rect)
+}
+
+fn drag_matches(drag: Option<PreviewDrag>, overlay_id: OverlayId, widget_id: TextWidgetId) -> bool {
+    drag.is_some_and(|drag| drag.overlay_id == overlay_id && drag.widget_id == widget_id)
+}
+
 fn render_canvas_preview(
     ui: &mut egui::Ui,
     canvas: crate::model::CanvasSize,
+    overlay_id: OverlayId,
     values: &mut TextEditorValues,
+    drag: &mut Option<PreviewDrag>,
 ) {
-    let available_width = ui.available_width().max(1.0);
-    let max_height = 360.0;
-    let scale = (available_width / canvas.width() as f32)
-        .min(max_height / canvas.height() as f32)
-        .min(1.0);
+    let scale = preview_scale(canvas, ui.available_width());
     let size = egui::vec2(
         canvas.width() as f32 * scale,
         canvas.height() as f32 * scale,
     );
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, egui::Color32::from_gray(24));
+    let (canvas_rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(canvas_rect);
+    painter.rect_filled(canvas_rect, 0.0, egui::Color32::from_gray(24));
     painter.rect_stroke(
-        rect,
+        canvas_rect,
         0.0,
         egui::Stroke::new(1.0_f32, egui::Color32::from_gray(96)),
     );
@@ -474,28 +601,63 @@ fn render_canvas_preview(
         values.color.blue(),
         values.color.alpha(),
     );
-    let anchor = match values.alignment {
-        Alignment::Left => egui::Align2::LEFT_TOP,
-        Alignment::Center => egui::Align2::CENTER_TOP,
-        Alignment::Right => egui::Align2::RIGHT_TOP,
-    };
-    let text_position =
-        rect.min + egui::vec2(values.position.x() * scale, values.position.y() * scale);
-    painter.text(
-        text_position,
-        anchor,
-        &values.content,
-        egui::FontId::proportional((values.font_size * scale).max(1.0)),
+    let region_width = ((canvas.width() as f32 - values.position.x()) * scale).max(0.0);
+    // Capping paint size protects the editor from huge but model-valid values;
+    // it is deliberately local and never written back to the authoritative model.
+    let paint_font_size = (values.font_size * scale).clamp(1.0, PREVIEW_MAX_PAINT_FONT);
+    let mut layout = egui::text::LayoutJob::simple(
+        values.content.clone(),
+        egui::FontId::proportional(paint_font_size),
         color,
+        region_width,
+    );
+    layout.halign = alignment_to_egui(values.alignment);
+    layout.wrap.max_width = region_width;
+    let galley = painter.layout_job(layout);
+    let region_origin = canvas_to_preview(canvas_rect.min, values.position, scale);
+    let paint_origin = aligned_paint_origin(region_origin, region_width, values.alignment);
+    painter.galley(paint_origin, galley.clone(), color);
+
+    let region = text_region_rect(canvas_rect, values.position, scale, galley.size().y);
+    let visual_rect = galley
+        .mesh_bounds
+        .translate(paint_origin.to_vec2())
+        .intersect(region);
+    let hitbox = widget_hitbox(canvas_rect, region_origin, visual_rect);
+    let response = ui.interact(
+        hitbox,
+        ui.make_persistent_id((
+            "preview-text",
+            overlay_id.to_string(),
+            values.id.to_string(),
+        )),
+        egui::Sense::drag(),
     );
 
-    if (response.dragged() || response.clicked())
+    if response.drag_started()
         && let Some(pointer) = response.interact_pointer_pos()
+        && hitbox.contains(pointer)
     {
-        values.position = Position::new(
-            ((pointer.x - rect.left()) / scale).clamp(0.0, canvas.width() as f32),
-            ((pointer.y - rect.top()) / scale).clamp(0.0, canvas.height() as f32),
+        *drag = Some(PreviewDrag {
+            overlay_id,
+            widget_id: values.id,
+            pointer_offset: pointer - region_origin,
+        });
+    }
+    if response.dragged()
+        && let (Some(active), Some(pointer)) = (*drag, response.interact_pointer_pos())
+        && drag_matches(Some(active), overlay_id, values.id)
+    {
+        values.position = preview_to_canvas(
+            canvas_rect.min,
+            pointer,
+            active.pointer_offset,
+            scale,
+            canvas,
         );
+    }
+    if response.drag_stopped() || !response.is_pointer_button_down_on() {
+        *drag = None;
     }
 }
 
@@ -857,6 +1019,23 @@ impl ScenarioHarness {
             }
             if let Some(overlay) = coordinator.selected_overlay() {
                 visible.push(overlay.name().to_owned());
+                visible.push("Text widget".to_owned());
+                if overlay.text_widget().is_some() {
+                    visible.extend([
+                        "Remove text widget".to_owned(),
+                        "Content".to_owned(),
+                        "Font size".to_owned(),
+                        "Color".to_owned(),
+                        "Alignment".to_owned(),
+                        "Position".to_owned(),
+                        "Canvas preview — drag to move the text widget".to_owned(),
+                    ]);
+                } else {
+                    visible.extend([
+                        "This overlay has no text widget.".to_owned(),
+                        "Add text widget".to_owned(),
+                    ]);
+                }
             }
         }
         if let Some(error) = coordinator.last_error() {
@@ -1080,6 +1259,132 @@ mod tests {
     }
 
     #[test]
+    fn preview_scale_and_coordinate_conversion_preserve_canvas_geometry() {
+        let canvas = crate::model::CanvasSize::new(1920, 1080).unwrap();
+        let scale = preview_scale(canvas, 960.0);
+        assert_eq!(scale, 1.0 / 3.0);
+
+        let origin = egui::pos2(10.0, 20.0);
+        let position = Position::new(300.0, 150.0);
+        assert_eq!(
+            canvas_to_preview(origin, position, scale),
+            egui::pos2(110.0, 70.0)
+        );
+        assert_eq!(
+            preview_to_canvas(
+                origin,
+                egui::pos2(125.0, 80.0),
+                egui::vec2(15.0, 10.0),
+                scale,
+                canvas,
+            ),
+            position
+        );
+        assert_eq!(
+            preview_to_canvas(
+                origin,
+                egui::pos2(-500.0, 900.0),
+                egui::Vec2::ZERO,
+                scale,
+                canvas,
+            ),
+            Position::new(0.0, 1080.0)
+        );
+    }
+
+    #[test]
+    fn preview_hitbox_is_widget_scoped_and_empty_text_has_a_small_handle() {
+        let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 240.0));
+        let visual = egui::Rect::from_min_max(egui::pos2(40.0, 50.0), egui::pos2(90.0, 70.0));
+        let hitbox = widget_hitbox(canvas, egui::pos2(40.0, 50.0), visual);
+        assert!(hitbox.contains(egui::pos2(60.0, 60.0)));
+        assert!(!hitbox.contains(egui::pos2(200.0, 200.0)));
+
+        let empty = widget_hitbox(canvas, egui::pos2(300.0, 230.0), egui::Rect::NOTHING);
+        assert_eq!(empty.min, egui::pos2(300.0, 230.0));
+        assert_eq!(empty.max, egui::pos2(312.0, 240.0));
+    }
+
+    #[test]
+    fn preview_region_and_alignment_keep_model_position_as_top_left() {
+        let canvas = egui::Rect::from_min_size(egui::pos2(5.0, 10.0), egui::vec2(320.0, 240.0));
+        let position = Position::new(40.0, 30.0);
+        let region = text_region_rect(canvas, position, 0.5, 24.0);
+        assert_eq!(region.min, egui::pos2(25.0, 25.0));
+        assert_eq!(region.right(), canvas.right());
+        let width = region.width();
+        assert_eq!(
+            aligned_paint_origin(region.min, width, Alignment::Left),
+            region.min
+        );
+        assert_eq!(
+            aligned_paint_origin(region.min, width, Alignment::Center),
+            egui::pos2(region.center().x, region.min.y)
+        );
+        assert_eq!(
+            aligned_paint_origin(region.min, width, Alignment::Right),
+            egui::pos2(region.right(), region.min.y)
+        );
+    }
+
+    #[test]
+    fn preview_drag_state_is_scoped_to_overlay_and_widget() {
+        let first_overlay = crate::model::Overlay::with_dimensions("First", 320, 240).unwrap();
+        let second_overlay = crate::model::Overlay::with_dimensions("Second", 320, 240).unwrap();
+        let first_widget = TextWidget::new("first");
+        let second_widget = TextWidget::new("second");
+        let drag = PreviewDrag {
+            overlay_id: first_overlay.id(),
+            widget_id: first_widget.id(),
+            pointer_offset: egui::vec2(3.0, 4.0),
+        };
+        assert!(drag_matches(
+            Some(drag),
+            first_overlay.id(),
+            first_widget.id()
+        ));
+        assert!(!drag_matches(
+            Some(drag),
+            second_overlay.id(),
+            first_widget.id()
+        ));
+        assert!(!drag_matches(
+            Some(drag),
+            first_overlay.id(),
+            second_widget.id()
+        ));
+        assert!(!drag_matches(None, first_overlay.id(), first_widget.id()));
+    }
+
+    #[test]
+    fn semantic_editor_controls_enforce_zero_or_one_widget() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        assert!(harness.has_label("Add text widget"));
+        assert!(!harness.has_label("Remove text widget"));
+
+        harness
+            .click("Add text widget")
+            .expect("add the optional widget");
+        assert!(!harness.has_label("Add text widget"));
+        assert!(harness.has_label("Remove text widget"));
+        assert!(harness.has_label("Content"));
+        assert!(harness.has_label("Font size"));
+        assert!(harness.has_label("Color"));
+        assert!(harness.has_label("Alignment"));
+        assert!(harness.has_label("Position"));
+        assert!(harness.has_label("Canvas preview"));
+
+        harness
+            .click("Remove text widget")
+            .expect("remove the optional widget");
+        assert!(harness.has_label("Add text widget"));
+        assert!(!harness.has_label("Remove text widget"));
+    }
+
+    #[test]
     fn text_editor_adds_updates_and_removes_through_the_coordinator() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let mut coordinator =
@@ -1125,6 +1430,29 @@ mod tests {
         assert_eq!(widget.color(), Color::rgba(10, 20, 30, 128));
         assert_eq!(widget.alignment(), Alignment::Center);
         assert!(coordinator.is_dirty());
+
+        coordinator.save().expect("save valid edit");
+        let prior = coordinator.overlay(overlay_id).unwrap().clone();
+        let mut invalid = TextEditorValues::from_widget(prior.text_widget().unwrap());
+        invalid.font_size = 0.0;
+        assert!(apply_text_editor_values(&mut coordinator, overlay_id, invalid).is_err());
+        assert_eq!(coordinator.overlay(overlay_id).unwrap(), &prior);
+        assert!(!coordinator.is_dirty());
+        assert!(coordinator.last_error().unwrap().contains("font size"));
+
+        let mut large = TextEditorValues::from_widget(prior.text_widget().unwrap());
+        large.font_size = 2048.0;
+        apply_text_editor_values(&mut coordinator, overlay_id, large)
+            .expect("model-valid font size is accepted without UI clamping");
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .text_widget()
+                .unwrap()
+                .font_size(),
+            2048.0
+        );
 
         remove_text_widget(&mut coordinator, overlay_id, widget_id).expect("remove widget");
         assert!(
