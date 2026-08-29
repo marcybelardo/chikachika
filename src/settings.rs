@@ -275,7 +275,7 @@ impl SettingsState {
         let store = self
             .store
             .as_ref()
-            .ok_or_else(|| SettingsError::AppLocalDirectoryUnavailable)?;
+            .ok_or(SettingsError::AppLocalDirectoryUnavailable)?;
         store.save_port(port)?;
         self.configured_port = Some(port);
         self.error = None;

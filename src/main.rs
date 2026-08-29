@@ -56,6 +56,7 @@ impl ShutdownCapable for ServerHandle {
     }
 }
 
+#[cfg(test)]
 fn startup_with<ResolveStore, StartServer>(
     resolve_store: ResolveStore,
     start_server: StartServer,
