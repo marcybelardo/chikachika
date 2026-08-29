@@ -800,6 +800,28 @@ mod tests {
     }
 
     #[test]
+    fn selected_url_survives_rename_and_persisted_restart() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("overlays.json");
+        let mut app = coordinator(&path);
+        let id = app.create_overlay("Live", 320, 240).expect("create");
+        app.set_server_address("127.0.0.1:51737".parse().expect("address"));
+        let original_url = app.selected_url().expect("ready URL");
+
+        app.rename_overlay(id, "Renamed").expect("rename");
+        assert_eq!(app.selected_url().as_deref(), Some(original_url.as_str()));
+        app.save().expect("save renamed overlay");
+
+        let mut restarted = HeadlessCoordinator::bootstrap(Store::at(&path)).expect("restore");
+        restarted.set_server_address("127.0.0.1:51737".parse().expect("address"));
+        assert_eq!(restarted.selected_overlay_id(), Some(id));
+        assert_eq!(
+            restarted.selected_url().as_deref(),
+            Some(original_url.as_str())
+        );
+    }
+
+    #[test]
     fn startup_failure_is_atomic_and_success_gates_url_on_readiness() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("overlays.json");
