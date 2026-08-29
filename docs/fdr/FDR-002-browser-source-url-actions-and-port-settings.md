@@ -6,7 +6,7 @@
 
 ## Overview
 
-Issue #8 completes the local browser-source workflow by giving a user direct copy and open actions for the selected overlay URL and a way to configure the loopback server port. It extends the behavior in [FDR-001](FDR-001-overlay-editing-and-local-browser-source.md) with explicit endpoint readiness, validation, and restart semantics. The implementation and automated coverage now provide this accepted user-visible contract.
+Issue #8 completes the local browser-source workflow by giving a user direct copy and open actions for the selected overlay URL and a way to configure the loopback server port. It extends the behavior in [FDR-001](FDR-001-overlay-editing-and-local-browser-source.md) with explicit endpoint readiness, validation, and restart semantics. The issue #8 implementation is pending in the baseline where this record is introduced; this record is the accepted user-visible contract for that implementation.
 
 ## User-visible Behavior
 
