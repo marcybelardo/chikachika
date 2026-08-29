@@ -8,7 +8,7 @@
 
 The overlay collection is user-created document data, while the loopback server port is application configuration with a different lifecycle and failure surface. The existing `overlays.json` document store lives in the platform app-local data directory. Issue #8 adds a configurable loopback port, so the application needs an explicit settings boundary that does not mix server configuration into overlay documents or silently choose a different endpoint when configuration is unusable.
 
-The issue #8 implementation is not yet present in the baseline where this record is introduced. This accepted ADR records the contract that the implementation must satisfy; it does not claim that the settings file or configurable-port controls are already shipped.
+The issue #8 implementation follows this contract: settings are loaded before server startup, exposed to the native GUI, and saved independently from overlay documents.
 
 ## Decision
 

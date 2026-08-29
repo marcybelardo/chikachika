@@ -46,22 +46,22 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ### Application settings and port lifecycle (issue #8)
 
-The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server-settings-from-overlay-documents.md) and [FDR-002](fdr/FDR-002-browser-source-url-actions-and-port-settings.md), but remain unchecked until the issue #8 implementation and verification land.
+The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server-settings-from-overlay-documents.md) and [FDR-002](fdr/FDR-002-browser-source-url-actions-and-port-settings.md).
 
-- [ ] Server settings are persisted separately from overlay documents as a versioned `settings.json` envelope in the platform config location. *(Implementation pending.)*
-- [ ] Missing settings use the loopback default `127.0.0.1:51737`.
-- [ ] Configured ports accept only the inclusive range `1..=65535`.
-- [ ] Malformed or unsupported settings remain unchanged, are shown visibly, and prevent server startup instead of silently falling back.
-- [ ] A port change is saved for the next launch and does not live-rebind the current server.
-- [ ] No automatic alternate port is selected after a bind conflict.
+- [x] Server settings are persisted separately from overlay documents as a versioned `settings.json` envelope in the platform config location.
+- [x] Missing settings use the loopback default `127.0.0.1:51737`.
+- [x] Configured ports accept only the inclusive range `1..=65535`.
+- [x] Malformed or unsupported settings remain unchanged, are shown visibly, and prevent server startup instead of silently falling back.
+- [x] A port change is saved for the next launch and does not live-rebind the current server.
+- [x] No automatic alternate port is selected after a bind conflict.
 
 ### Browser-source hosting
 
 - [x] The application serves each overlay at its stable local URL after the issue #4 workspace registers it. *(The server route and workspace registration are implemented.)*
 - [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
 - [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(Editor publication, bounded SSE delivery, and client-side application are implemented and covered automatically; connected-browser and OBS validation remain pending in issue #10.)*
-- [ ] The application provides a straightforward way to copy the exact selected browser-source URL only after server readiness (**issue #8; implementation pending**).
-- [ ] The application provides a straightforward way to open the exact selected browser output for preview or troubleshooting only after server readiness (**issue #8; implementation pending**).
+- [x] The application provides a straightforward way to copy the exact selected browser-source URL only after server readiness (**issue #8**).
+- [x] The application provides a straightforward way to open the exact selected browser output for preview or troubleshooting only after server readiness (**issue #8**).
 - [x] Server startup and port conflicts are visible and non-destructive.
 - [x] The local server binds only to the loopback interface by default.
 
@@ -80,7 +80,7 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 - [ ] The application handles malformed or unsupported persisted data without silently losing user data. *(The non-destructive load behavior and visible blocked-startup path are implemented and covered automatically; milestone completion status has not yet been advanced.)*
 - [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
 - [ ] Setup, run, test, and OBS connection instructions are documented.
-- [ ] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(Issue #8 decisions and pending target ownership are documented; the final current-state pass remains required after its implementation changes the URL workflow.)*
+- [x] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(Issue #8 settings, URL actions, and current ownership are documented.)*
 
 ## Explicitly Out of Scope
 
