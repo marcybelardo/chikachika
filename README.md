@@ -16,10 +16,10 @@ Implemented in the current target:
 - Versioned JSON persistence in the platform app-local data directory, including non-destructive malformed-data handling and safe replacement.
 - A compile-time embedded transparent browser renderer for the current overlay model.
 - Server-side hosting for registered overlays at stable `/overlay/{overlay-id}` HTML routes with bounded `/overlay/{overlay-id}/events` SSE snapshots.
-- Issue #4 application-state wiring for overlay collection, selection, lifecycle actions, dirty/save state, visible errors, and server shutdown coordination.
-- Issue #5 native one-widget editing with multiline text, font size, RGBA color, alignment, fixed-canvas preview, bounded drag movement, and live publication through the shared hosting hub.
+- Application-state wiring for overlay collection, selection, lifecycle actions, dirty/save state, visible errors, and server shutdown coordination.
+- Native one-widget editing with multiline text, font size, RGBA color, alignment, fixed-canvas preview, bounded drag movement, and live publication through the shared hosting hub.
 
-### Native overlay workspace (issues #4 and #5)
+### Native overlay workspace
 
 The native workspace uses the shared model, persistence store, and hosting hub rather than maintaining a second document representation. It provides the overlay collection and lifecycle actions (create, name, select, rename, and explicitly confirm deletion), plus a one-widget text editor and fixed-canvas preview. Its startup and readiness contract is:
 
@@ -30,7 +30,7 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 - Keep startup, load, save, and shutdown failures visible and non-destructive so a user can recover without losing in-memory work or persisted data; malformed startup sources require repair and restart.
 - Preserve each overlay's stable identity and browser-source URL across renames and application restarts.
 
-Still pending beyond issues #4 and #5:
+Still pending for `0.0.1`:
 
 - User-facing browser-source URL copy/open actions and configurable-port UX (**issue #8**); the current normal-run default remains loopback `127.0.0.1:51737`.
 - OBS setup instructions and end-to-end OBS verification on macOS and Linux, including target-platform validation.
@@ -114,6 +114,17 @@ pong
 ```
 
 The workspace restores saved overlays before presenting the editable collection, keeps selection and save/readiness status visible, and coordinates graceful local-server shutdown when the window closes. A selected overlay's browser-source URL is available only after the server reports readiness and the overlay is registered.
+
+## Local overlay data
+
+Chikachika stores the complete versioned overlay snapshot in `overlays.json` under the platform app-local data directory selected by `directories::ProjectDirs`:
+
+| Platform | Path |
+|---|---|
+| Linux | `$XDG_DATA_HOME/chikachika/overlays.json` when `XDG_DATA_HOME` is an absolute path; otherwise `$HOME/.local/share/chikachika/overlays.json` |
+| macOS | `$HOME/Library/Application Support/Chikachika/overlays.json` |
+
+The application creates the parent directory when needed and never falls back to the repository or current working directory. Malformed or unsupported data is left unchanged and blocks workspace startup so it can be backed up or repaired; restart Chikachika after repairing the source file.
 
 ## Test and checks
 

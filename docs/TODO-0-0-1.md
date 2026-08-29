@@ -1,6 +1,6 @@
 # `0.0.1` Milestone
 
-**Status:** Planning
+**Status:** In progress
 
 `0.0.1` is the first functional vertical slice of the application. It remains an unreleased pre-release target: implementation and architecture may change substantially while this checklist is in progress.
 
@@ -35,7 +35,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 - [x] The editor provides a useful fixed-aspect visual preview, while the browser output remains authoritative for final rendering.
 - [x] Layering, canvas resizing, rich text, and animation remain deferred beyond 0.0.1.
 
-### Local persistence (issue #4 integration)
+### Local persistence (issues #3 and #4)
 
 - [x] Overlays and their supported settings are saved locally as one complete versioned snapshot.
 - [x] A successful save clears dirty state.
@@ -48,7 +48,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 - [x] The application serves each overlay at its stable local URL after the issue #4 workspace registers it. *(The server route and workspace registration are implemented.)*
 - [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
-- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(The bounded SSE transport and client exist; editor publication depends on issue #5.)*
+- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(Editor publication, bounded SSE delivery, and client-side application are implemented and covered automatically; connected-browser and OBS validation remain pending in issue #10.)*
 - [ ] The application provides a straightforward way to copy the browser-source URL (**issue #8, pending**).
 - [ ] The application provides a straightforward way to open the exact browser output for preview or troubleshooting (**issue #8, pending**).
 - [ ] Configurable-port UX is provided and documented (**issue #8, pending**); the default remains loopback `127.0.0.1:51737`.
@@ -65,12 +65,12 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ## Quality Requirements
 
-- [ ] Automated tests cover the persisted overlay model and its round-trip behavior.
+- [ ] Automated tests cover the persisted overlay model and its round-trip behavior. *(Round-trip coverage is implemented and passes on both CI targets; milestone completion status has not yet been advanced.)*
 - [x] Automated tests cover the browser representation or update protocol where practical.
-- [ ] The application handles malformed or unsupported persisted data without silently losing user data.
+- [ ] The application handles malformed or unsupported persisted data without silently losing user data. *(The non-destructive load behavior and visible blocked-startup path are implemented and covered automatically; milestone completion status has not yet been advanced.)*
 - [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
 - [ ] Setup, run, test, and OBS connection instructions are documented.
-- [ ] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice.
+- [ ] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(The implemented slice has been audited; a final pass remains required after issue #8 changes the URL workflow.)*
 
 ## Explicitly Out of Scope
 
