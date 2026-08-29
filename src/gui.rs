@@ -1,13 +1,15 @@
 //! Native egui adapter for the issue #4 overlay workspace.
 //!
-//! The adapter owns only transient form and confirmation state. The overlay
-//! collection, selection, dirty state, persistence status, and URL readiness
-//! all remain in [`crate::app::HeadlessCoordinator`].
+//! The adapter owns transient form and confirmation state plus the separate
+//! application settings state. The overlay collection, selection, dirty state,
+//! persistence status, and URL readiness all remain in
+//! [`crate::app::HeadlessCoordinator`].
 
 use eframe::egui;
 
-use crate::app::{BootstrapOutcome, HeadlessCoordinator};
+use crate::app::{ApplicationBootstrap, BootstrapOutcome, HeadlessCoordinator};
 use crate::model::{Alignment, Color, OverlayId, Position, TextWidget, TextWidgetId};
+use crate::settings::{MAX_PORT, MIN_PORT, Settings, SettingsState, Store as SettingsStore};
 
 #[derive(Default)]
 struct TransientState {
@@ -21,6 +23,9 @@ struct TransientState {
     delete_target: Option<OverlayId>,
     dialog_error: Option<String>,
     preview_drag: Option<PreviewDrag>,
+    settings_port_input: String,
+    settings_save_error: Option<String>,
+    settings_save_succeeded: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,22 +43,54 @@ struct PreviewDrag {
 pub struct ChikachikaApp {
     coordinator: Option<HeadlessCoordinator>,
     blocked: Option<crate::app::BootstrapFailure>,
+    settings: SettingsState,
     transient: TransientState,
 }
 
 impl ChikachikaApp {
-    /// Creates the adapter from the startup result.
+    /// Creates the adapter from the overlay startup result.
+    ///
+    /// This compatibility constructor supplies a deterministic default settings
+    /// state without filesystem I/O for headless callers. Production startup
+    /// should use [`Self::from_application_bootstrap`] so the loaded settings
+    /// path and any settings error remain visible to the GUI.
     pub fn from_bootstrap(outcome: BootstrapOutcome) -> Self {
+        Self::from_parts(
+            outcome,
+            SettingsState::from_settings(SettingsStore::at("settings.json"), Settings::default()),
+        )
+    }
+
+    /// Creates the adapter from the complete production startup state.
+    ///
+    /// The coordinator and settings state are independent: an invalid settings
+    /// source can leave the overlay workspace usable while preventing server
+    /// startup, and saving a port changes only the next launch.
+    pub fn from_application_bootstrap(bootstrap: ApplicationBootstrap) -> Self {
+        let (outcome, settings) = bootstrap.into_parts();
+        Self::from_parts(outcome, settings)
+    }
+
+    fn from_parts(outcome: BootstrapOutcome, settings: SettingsState) -> Self {
+        let settings_port_input = settings.display_port().to_string();
         match outcome {
             BootstrapOutcome::Ready(coordinator) => Self {
                 coordinator: Some(coordinator),
                 blocked: None,
-                transient: TransientState::default(),
+                settings,
+                transient: TransientState {
+                    settings_port_input,
+                    ..TransientState::default()
+                },
             },
             BootstrapOutcome::Blocked(failure) => Self {
                 coordinator: None,
                 blocked: Some(failure),
-                transient: TransientState::default(),
+                settings,
+                transient: TransientState {
+                    settings_port_input,
+                    ..TransientState::default()
+                },
             },
         }
     }
@@ -73,6 +110,12 @@ impl ChikachikaApp {
     #[cfg(test)]
     pub fn coordinator_mut(&mut self) -> Option<&mut HeadlessCoordinator> {
         self.coordinator.as_mut()
+    }
+
+    /// Returns the settings state for deterministic adapter assertions.
+    #[cfg(test)]
+    pub fn settings(&self) -> &SettingsState {
+        &self.settings
     }
 
     /// Returns whether this adapter is displaying blocked startup recovery.
@@ -164,6 +207,11 @@ impl ChikachikaApp {
     }
 
     #[cfg(test)]
+    fn save_settings_port(&mut self) -> Result<(), String> {
+        save_port_for_next_launch(&mut self.settings, &mut self.transient)
+    }
+
+    #[cfg(test)]
     fn select_named(&mut self, name: &str) -> Result<(), String> {
         select_named(self.coordinator.as_mut(), name)
     }
@@ -185,6 +233,7 @@ impl ChikachikaApp {
             "Delete" => self.open_delete(),
             "Confirm delete" => self.confirm_delete(),
             "Save" => self.save_workspace(),
+            "Save port for next launch" | "Save port" => self.save_settings_port(),
             "Add text widget" => add_selected_text_widget(self.coordinator.as_mut()),
             "Remove text widget" => remove_selected_text_widget(self.coordinator.as_mut()),
             other => self.select_named(other),
@@ -218,6 +267,8 @@ impl ChikachikaApp {
                 }
             });
         });
+
+        render_settings(context, &mut self.settings, transient, Some(&*coordinator));
 
         egui::SidePanel::left("overlay-list")
             .resizable(true)
@@ -287,13 +338,20 @@ impl ChikachikaApp {
                 ui.add_space(8.0);
                 ui.label("Browser-source URL");
                 if let Some(url) = coordinator.selected_url() {
-                    ui.monospace(url);
+                    ui.monospace(&url);
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy URL").clicked() {
+                            copy_url(ui.ctx(), &url);
+                        }
+                        if ui.button("Open in browser").clicked() {
+                            open_url(ui.ctx(), &url);
+                        }
+                    });
                 } else {
                     ui.label(
                     "Unavailable until the local server successfully binds and reports readiness.",
                 );
                 }
-                ui.label("URL actions and configurable-port controls are deferred to issue #8.");
             });
         });
 
@@ -760,11 +818,224 @@ fn confirm_delete(
     Ok(())
 }
 
+fn parse_port_input(input: &str) -> Result<u16, String> {
+    let value = input
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("Port must be a whole number from {MIN_PORT} to {MAX_PORT}."))?;
+    if !(u32::from(MIN_PORT)..=u32::from(MAX_PORT)).contains(&value) {
+        return Err(format!(
+            "Port must be a whole number from {MIN_PORT} to {MAX_PORT}."
+        ));
+    }
+    u16::try_from(value)
+        .map_err(|_| format!("Port must be a whole number from {MIN_PORT} to {MAX_PORT}."))
+}
+
+fn save_port_for_next_launch(
+    settings: &mut SettingsState,
+    transient: &mut TransientState,
+) -> Result<(), String> {
+    transient.settings_save_error = None;
+    transient.settings_save_succeeded = false;
+    let port = match parse_port_input(&transient.settings_port_input) {
+        Ok(port) => port,
+        Err(error) => {
+            transient.settings_save_error = Some(error.clone());
+            return Err(error);
+        }
+    };
+
+    match settings.save_port_for_next_launch(port) {
+        Ok(()) => {
+            transient.settings_save_succeeded = true;
+            Ok(())
+        }
+        Err(error) => {
+            let error = format!("Could not save port for next launch: {error}");
+            transient.settings_save_error = Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
 fn save_workspace(coordinator: Option<&mut HeadlessCoordinator>) -> Result<(), String> {
     coordinator
         .ok_or_else(|| "workspace is not available".to_owned())?
         .save()
         .map_err(|error| error.to_string())
+}
+
+fn copy_url(context: &egui::Context, url: &str) {
+    context.copy_text(url.to_owned());
+}
+
+fn open_url(context: &egui::Context, url: &str) {
+    context.open_url(egui::OpenUrl::same_tab(url));
+}
+
+#[cfg(test)]
+fn copy_selected_url(
+    context: &egui::Context,
+    coordinator: Option<&HeadlessCoordinator>,
+) -> Result<(), String> {
+    let url = coordinator
+        .ok_or_else(|| "workspace is not available".to_owned())?
+        .selected_url()
+        .ok_or_else(|| "browser-source URL is unavailable".to_owned())?;
+    copy_url(context, &url);
+    Ok(())
+}
+
+#[cfg(test)]
+fn open_selected_url(
+    context: &egui::Context,
+    coordinator: Option<&HeadlessCoordinator>,
+) -> Result<(), String> {
+    let url = coordinator
+        .ok_or_else(|| "workspace is not available".to_owned())?
+        .selected_url()
+        .ok_or_else(|| "browser-source URL is unavailable".to_owned())?;
+    open_url(context, &url);
+    Ok(())
+}
+
+fn render_settings(
+    context: &egui::Context,
+    settings: &mut SettingsState,
+    transient: &mut TransientState,
+    coordinator: Option<&HeadlessCoordinator>,
+) {
+    let configured_port = settings.configured_port();
+    let settings_path = settings
+        .settings_path()
+        .map(|path| path.display().to_string());
+    let settings_error = settings.settings_error().map(ToString::to_string);
+    let active_port = coordinator
+        .and_then(|coordinator| coordinator.server_address().map(|address| address.port()));
+
+    egui::TopBottomPanel::bottom("settings")
+        .resizable(true)
+        .default_height(174.0)
+        .show(context, |ui| {
+            ui.heading("Local server settings");
+            ui.horizontal_wrapped(|ui| {
+                if let Some(port) = configured_port {
+                    ui.label(format!("Current configured port: {port}"));
+                    ui.label(format!("Next-launch port: {port}"));
+                } else {
+                    ui.label("Current configured port: unavailable");
+                    ui.label("Next-launch port: unavailable");
+                    ui.label(format!(
+                        "Display-only default: {} (not used while settings are invalid).",
+                        settings.display_port()
+                    ));
+                }
+                if let Some(path) = settings_path.as_deref() {
+                    ui.label(format!("Settings path: {path}"));
+                } else {
+                    ui.label("Settings path: unavailable");
+                }
+                if let Some(active_port) = active_port {
+                    ui.label(format!(
+                        "Running server remains on port {active_port} until restart."
+                    ));
+                }
+            });
+            if let Some(error) = settings_error.as_deref() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(183, 28, 28),
+                    format!("Settings error: {error}"),
+                );
+                ui.label(
+                    "Repair or remove the settings source, then restart Chikachika. No fallback port is used while settings are invalid.",
+                );
+            }
+            ui.horizontal(|ui| {
+                ui.label("Port for next launch (1–65535)");
+                let input = ui.text_edit_singleline(&mut transient.settings_port_input);
+                if input.changed() {
+                    transient.settings_save_error = None;
+                    transient.settings_save_succeeded = false;
+                }
+                if ui.button("Save port for next launch").clicked()
+                    && let Err(error) = save_port_for_next_launch(settings, transient)
+                {
+                    transient.settings_save_error = Some(error);
+                }
+            });
+            if let Some(error) = transient.settings_save_error.as_deref() {
+                ui.colored_label(egui::Color32::from_rgb(183, 28, 28), error);
+                ui.label(
+                    "Check the settings path and permissions, then try again. The previous configured port remains unchanged.",
+                );
+            }
+            if transient.settings_save_succeeded {
+                ui.colored_label(
+                    egui::Color32::from_rgb(46, 125, 50),
+                    "Port saved for next launch. Changes take effect after restarting Chikachika.",
+                );
+            } else {
+                ui.label("Port changes take effect only after restarting Chikachika.");
+            }
+        });
+}
+
+#[cfg(test)]
+fn append_settings_labels(
+    visible: &mut Vec<String>,
+    settings: &SettingsState,
+    transient: &TransientState,
+    active_port: Option<u16>,
+) {
+    visible.push("Local server settings".to_owned());
+    if let Some(port) = settings.configured_port() {
+        visible.push(format!("Current configured port: {port}"));
+        visible.push(format!("Next-launch port: {port}"));
+    } else {
+        visible.extend([
+            "Current configured port: unavailable".to_owned(),
+            "Next-launch port: unavailable".to_owned(),
+            format!(
+                "Display-only default: {} (not used while settings are invalid).",
+                settings.display_port()
+            ),
+        ]);
+    }
+    if let Some(path) = settings.settings_path() {
+        visible.push(format!("Settings path: {}", path.display()));
+    } else {
+        visible.push("Settings path: unavailable".to_owned());
+    }
+    if let Some(active_port) = active_port {
+        visible.push(format!(
+            "Running server remains on port {active_port} until restart."
+        ));
+    }
+    if let Some(error) = settings.settings_error() {
+        visible.push(format!("Settings error: {error}"));
+        visible.push(
+            "Repair or remove the settings source, then restart Chikachika. No fallback port is used while settings are invalid.".to_owned(),
+        );
+    }
+    visible.extend([
+        "Port for next launch (1–65535)".to_owned(),
+        "Save port for next launch".to_owned(),
+    ]);
+    if let Some(error) = transient.settings_save_error.as_deref() {
+        visible.push(error.to_owned());
+        visible.push(
+            "Check the settings path and permissions, then try again. The previous configured port remains unchanged.".to_owned(),
+        );
+    }
+    if transient.settings_save_succeeded {
+        visible.push(
+            "Port saved for next launch. Changes take effect after restarting Chikachika."
+                .to_owned(),
+        );
+    } else {
+        visible.push("Port changes take effect only after restarting Chikachika.".to_owned());
+    }
 }
 
 #[cfg(test)]
@@ -917,6 +1188,8 @@ fn render_delete_dialog(
 pub struct ScenarioHarness {
     context: egui::Context,
     app: ChikachikaApp,
+    last_copied_text: String,
+    last_open_url: Option<egui::OpenUrl>,
 }
 
 #[cfg(test)]
@@ -926,20 +1199,41 @@ impl ScenarioHarness {
         Self {
             context: egui::Context::default(),
             app: ChikachikaApp::from_bootstrap(outcome),
+            last_copied_text: String::new(),
+            last_open_url: None,
+        }
+    }
+
+    /// Creates a harness from deterministic startup state and settings.
+    pub fn new_with_settings(outcome: BootstrapOutcome, settings: SettingsState) -> Self {
+        Self {
+            context: egui::Context::default(),
+            app: ChikachikaApp::from_application_bootstrap(ApplicationBootstrap::new(
+                outcome, settings,
+            )),
+            last_copied_text: String::new(),
+            last_open_url: None,
         }
     }
 
     /// Advances one egui frame.
     pub fn frame(&mut self) {
         let app = &mut self.app;
-        let _ = self
+        let output = self
             .context
             .run(egui::RawInput::default(), |context| app.render(context));
+        self.last_copied_text = output.platform_output.copied_text;
+        self.last_open_url = output.platform_output.open_url;
     }
 
     /// Returns the current adapter state for semantic assertions.
     pub fn app(&self) -> &ChikachikaApp {
         &self.app
+    }
+
+    /// Returns the application settings for deterministic assertions.
+    pub fn settings(&self) -> &SettingsState {
+        self.app.settings()
     }
 
     /// Returns mutable adapter state for deterministic input setup.
@@ -952,9 +1246,31 @@ impl ScenarioHarness {
     /// helpers as the egui event handlers without requiring native-window or
     /// pixel-coordinate automation.
     pub fn click(&mut self, label: &str) -> Result<(), String> {
-        self.app.activate(label)?;
+        match label {
+            "Copy URL" => copy_selected_url(&self.context, self.app.coordinator.as_ref())?,
+            "Open in browser" => open_selected_url(&self.context, self.app.coordinator.as_ref())?,
+            _ => self.app.activate(label)?,
+        }
         self.frame();
         Ok(())
+    }
+
+    /// Returns the clipboard text emitted by the most recent semantic frame.
+    pub fn copied_text(&self) -> &str {
+        &self.last_copied_text
+    }
+
+    /// Returns the browser URL emitted by the most recent semantic frame.
+    pub fn opened_url(&self) -> Option<&str> {
+        self.last_open_url
+            .as_ref()
+            .map(|open_url| open_url.url.as_str())
+    }
+
+    /// Returns whether the most recent browser-opening output requested a new
+    /// tab rather than the current tab.
+    pub fn opens_in_new_tab(&self) -> Option<bool> {
+        self.last_open_url.as_ref().map(|open_url| open_url.new_tab)
     }
 
     /// Applies deterministic form values used by adapter scenarios.
@@ -967,6 +1283,13 @@ impl ScenarioHarness {
     /// Applies deterministic rename input used by adapter scenarios.
     pub fn set_rename_field(&mut self, name: &str) {
         self.app.transient.rename_name = name.to_owned();
+    }
+
+    /// Applies a deterministic next-launch port input used by adapter scenarios.
+    pub fn set_port_field(&mut self, port: &str) {
+        self.app.transient.settings_port_input = port.to_owned();
+        self.app.transient.settings_save_error = None;
+        self.app.transient.settings_save_succeeded = false;
     }
 
     /// Returns whether the current adapter state exposes the requested visible
@@ -985,7 +1308,6 @@ impl ScenarioHarness {
             "Overlays".to_owned(),
             "Create overlay".to_owned(),
             "Overlay details".to_owned(),
-            "URL actions and configurable-port controls are deferred to issue #8.".to_owned(),
         ];
         if coordinator.is_dirty() {
             visible.extend(["Unsaved changes".to_owned(), "Save".to_owned()]);
@@ -1011,6 +1333,7 @@ impl ScenarioHarness {
             ]);
             if let Some(url) = coordinator.selected_url() {
                 visible.push(url);
+                visible.extend(["Copy URL".to_owned(), "Open in browser".to_owned()]);
             } else {
                 visible.push(
                     "Unavailable until the local server successfully binds and reports readiness."
@@ -1058,6 +1381,15 @@ impl ScenarioHarness {
         if let Some(error) = self.app.transient.dialog_error.as_deref() {
             visible.push(error.to_owned());
         }
+        append_settings_labels(
+            &mut visible,
+            &self.app.settings,
+            &self.app.transient,
+            self.app
+                .coordinator
+                .as_ref()
+                .and_then(|coordinator| coordinator.server_address().map(|address| address.port())),
+        );
         visible
             .into_iter()
             .any(|text| text == label || text.contains(label))
@@ -1065,7 +1397,11 @@ impl ScenarioHarness {
 }
 
 /// Run the Chikachika native window until it is closed.
-pub fn run(outcome: BootstrapOutcome) -> eframe::Result {
+///
+/// The caller should pass `ApplicationBootstrap::new(outcome, settings)` (or
+/// `outcome.with_settings(settings)`) so the GUI can display and update the
+/// application settings state alongside the overlay workspace.
+pub fn run(bootstrap: ApplicationBootstrap) -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 640.0])
@@ -1076,7 +1412,11 @@ pub fn run(outcome: BootstrapOutcome) -> eframe::Result {
     eframe::run_native(
         "Chikachika",
         native_options,
-        Box::new(move |_creation_context| Ok(Box::new(ChikachikaApp::from_bootstrap(outcome)))),
+        Box::new(move |_creation_context| {
+            Ok(Box::new(ChikachikaApp::from_application_bootstrap(
+                bootstrap,
+            )))
+        }),
     )
 }
 
@@ -1095,6 +1435,221 @@ mod tests {
         harness.frame();
         assert!(!harness.app().is_blocked());
         assert!(harness.app().coordinator().unwrap().overlays().is_empty());
+    }
+
+    #[test]
+    fn settings_controls_show_port_path_and_restart_semantics() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings_path = directory.path().join("settings.json");
+        let settings = SettingsState::from_settings(
+            SettingsStore::at(&settings_path),
+            Settings::new(4_000).expect("valid settings"),
+        );
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
+        harness.frame();
+
+        assert!(harness.has_label("Local server settings"));
+        assert!(harness.has_label("Current configured port: 4000"));
+        assert!(harness.has_label("Next-launch port: 4000"));
+        assert!(harness.has_label(&format!("Settings path: {}", settings_path.display())));
+        assert!(harness.has_label("Port for next launch (1–65535)"));
+        assert!(harness.has_label("Save port for next launch"));
+        assert!(harness.has_label("Port changes take effect only after restarting Chikachika."));
+    }
+
+    #[test]
+    fn port_input_accepts_only_the_inclusive_valid_range() {
+        assert_eq!(parse_port_input("1"), Ok(1));
+        assert_eq!(parse_port_input("65535"), Ok(65535));
+        assert!(parse_port_input("0").is_err());
+        assert!(parse_port_input("65536").is_err());
+        assert!(parse_port_input("not a port").is_err());
+        assert!(parse_port_input(" ").is_err());
+
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.frame();
+        harness.set_port_field("0");
+        assert!(harness.click("Save port for next launch").is_err());
+        assert!(harness.has_label("Port must be a whole number from 1 to 65535."));
+        assert_eq!(harness.settings().configured_port(), Some(51_737));
+    }
+
+    #[test]
+    fn settings_save_is_separate_from_overlay_save_and_updates_only_settings() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings_path = directory.path().join("settings.json");
+        let settings = SettingsState::from_settings(
+            SettingsStore::at(&settings_path),
+            Settings::new(4_000).expect("valid settings"),
+        );
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
+        harness.frame();
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Unsaved", "320", "240");
+        harness.click("Create").expect("create overlay");
+        assert!(harness.app().coordinator().unwrap().is_dirty());
+
+        harness.set_port_field("4_001");
+        // Underscores are not accepted by the deliberately plain whole-number input.
+        assert!(harness.click("Save port for next launch").is_err());
+        harness.set_port_field("4001");
+        harness
+            .click("Save port for next launch")
+            .expect("save next-launch port");
+
+        assert_eq!(harness.settings().configured_port(), Some(4_001));
+        assert!(harness.settings().settings_error().is_none());
+        assert!(harness.app().coordinator().unwrap().is_dirty());
+        assert!(harness.has_label("Port saved for next launch."));
+        assert!(harness.has_label("Changes take effect after restarting Chikachika."));
+        assert_eq!(
+            SettingsStore::at(&settings_path)
+                .load()
+                .unwrap()
+                .server_port(),
+            4_001
+        );
+    }
+
+    #[test]
+    fn failed_settings_save_preserves_previous_value_and_error() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings_path = directory.path().join("settings.json");
+        std::fs::create_dir(&settings_path).expect("make destination a directory");
+        let settings = SettingsState::from_settings(
+            SettingsStore::at(&settings_path),
+            Settings::new(4_000).expect("valid settings"),
+        );
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
+        harness.frame();
+        harness.set_port_field("4001");
+        assert!(harness.click("Save port for next launch").is_err());
+
+        assert_eq!(harness.settings().configured_port(), Some(4_000));
+        assert!(harness.settings().settings_error().is_none());
+        assert!(harness.has_label("Could not save port for next launch:"));
+        assert!(harness.has_label("The previous configured port remains unchanged."));
+        assert!(!harness.has_label("Port saved for next launch."));
+
+        let malformed_path = directory.path().join("malformed.json");
+        std::fs::write(&malformed_path, b"not json").expect("write malformed settings");
+        let invalid_settings = SettingsState::load(SettingsStore::at(&malformed_path));
+        let prior_error = invalid_settings
+            .settings_error()
+            .expect("load error")
+            .to_string();
+        let mut invalid_harness = ScenarioHarness::new_with_settings(
+            BootstrapOutcome::Ready(ready_app()),
+            invalid_settings,
+        );
+        invalid_harness.frame();
+        invalid_harness.set_port_field("4001");
+        // Restore the failed-save shape without replacing the malformed source.
+        std::fs::remove_file(&malformed_path).expect("remove malformed source");
+        std::fs::create_dir(&malformed_path).expect("make settings destination a directory");
+        assert!(invalid_harness.click("Save port for next launch").is_err());
+        assert_eq!(invalid_harness.settings().configured_port(), None);
+        assert_eq!(
+            invalid_harness
+                .settings()
+                .settings_error()
+                .expect("prior load error remains")
+                .to_string(),
+            prior_error
+        );
+    }
+
+    #[test]
+    fn invalid_settings_show_recovery_guidance_and_can_be_repaired() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings_path = directory.path().join("settings.json");
+        std::fs::write(&settings_path, b"not json").expect("write malformed settings");
+        let settings = SettingsState::load(SettingsStore::at(&settings_path));
+        assert!(!settings.is_valid());
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
+        harness.frame();
+
+        assert!(harness.has_label("Current configured port: unavailable"));
+        assert!(harness.has_label("Settings error:"));
+        assert!(harness.has_label("Repair or remove the settings source"));
+        assert!(harness.has_label("No fallback port is used while settings are invalid."));
+
+        harness.set_port_field("4001");
+        harness
+            .click("Save port for next launch")
+            .expect("repair settings by saving a valid port");
+        assert!(harness.settings().is_valid());
+        assert_eq!(harness.settings().configured_port(), Some(4_001));
+        assert!(harness.settings().settings_error().is_none());
+        assert!(harness.has_label("Port saved for next launch."));
+        assert_eq!(
+            SettingsStore::at(&settings_path)
+                .load()
+                .unwrap()
+                .server_port(),
+            4_001
+        );
+    }
+
+    #[test]
+    fn port_change_explains_restart_and_does_not_rebind_or_create_url() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings_path = directory.path().join("settings.json");
+        let settings = SettingsState::from_settings(
+            SettingsStore::at(&settings_path),
+            Settings::new(4_000).expect("valid settings"),
+        );
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
+        harness.frame();
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_url()
+                .is_none()
+        );
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .set_server_address("127.0.0.1:4000".parse().expect("socket address"));
+        harness.set_port_field("4001");
+        harness
+            .click("Save port for next launch")
+            .expect("save next-launch port");
+
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .server_address()
+                .unwrap()
+                .port(),
+            4_000
+        );
+        assert_eq!(harness.settings().configured_port(), Some(4_001));
+        assert!(harness.has_label("Running server remains on port 4000 until restart."));
+        assert!(harness.has_label("Changes take effect after restarting Chikachika."));
+        // Once readiness is explicitly reported, the coordinator—not the
+        // settings form—becomes the URL authority.
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_url()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1233,6 +1788,8 @@ mod tests {
                 .selected_url()
                 .is_none()
         );
+        assert!(!harness.has_label("Copy URL"));
+        assert!(!harness.has_label("Open in browser"));
         assert!(harness.has_label(
             "Unavailable until the local server successfully binds and reports readiness."
         ));
@@ -1256,6 +1813,76 @@ mod tests {
             )
         );
         assert!(harness.has_label("Browser-source URL"));
+        assert!(harness.has_label("Copy URL"));
+        assert!(harness.has_label("Open in browser"));
+    }
+
+    #[test]
+    fn url_actions_emit_the_exact_selected_url() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.frame();
+        assert!(!harness.has_label("Copy URL"));
+        assert!(!harness.has_label("Open in browser"));
+        assert!(harness.click("Copy URL").is_err());
+        assert!(harness.click("Open in browser").is_err());
+        assert_eq!(harness.copied_text(), "");
+        assert_eq!(harness.opened_url(), None);
+
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        assert!(harness.click("Copy URL").is_err());
+        assert!(harness.click("Open in browser").is_err());
+        assert_eq!(harness.copied_text(), "");
+        assert_eq!(harness.opened_url(), None);
+
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .set_server_address("127.0.0.1:51737".parse().expect("socket address"));
+        harness.frame();
+        let url = harness.app().coordinator().unwrap().selected_url().unwrap();
+
+        harness.click("Copy URL").expect("copy selected URL");
+        assert_eq!(harness.copied_text(), url);
+        assert_eq!(harness.opened_url(), None);
+
+        harness
+            .click("Open in browser")
+            .expect("open selected URL in browser");
+        assert_eq!(harness.copied_text(), "");
+        assert_eq!(harness.opened_url(), Some(url.as_str()));
+        assert_eq!(harness.opens_in_new_tab(), Some(false));
+    }
+
+    #[test]
+    fn url_actions_hide_when_hosted_overlay_diverges_from_workspace() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        let coordinator = harness.app_mut().coordinator_mut().unwrap();
+        coordinator.set_server_address("127.0.0.1:51737".parse().expect("socket address"));
+        let overlay_id = coordinator.selected_overlay_id().unwrap();
+        coordinator
+            .hub()
+            .remove(overlay_id)
+            .expect("remove hosted overlay");
+        harness.frame();
+
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_url()
+                .is_none()
+        );
+        assert!(!harness.has_label("Copy URL"));
+        assert!(!harness.has_label("Open in browser"));
+        assert!(harness.click("Copy URL").is_err());
+        assert!(harness.click("Open in browser").is_err());
     }
 
     #[test]
@@ -1490,21 +2117,28 @@ mod tests {
     }
 
     #[test]
-    fn text_editor_controls_are_present_while_issue_8_controls_remain_absent() {
+    fn text_editor_url_and_port_controls_are_present() {
         let source = include_str!("gui.rs");
         let production = source
             .split("/// A small native-window-free semantic scenario harness")
             .next()
             .expect("production adapter precedes its tests");
-        assert!(!production.contains("copy_url_button"));
-        assert!(!production.contains("open_url_button"));
-        assert!(!production.contains("port_control"));
         assert!(production.contains("TextEdit::multiline"));
         assert!(production.contains("Add text widget"));
         assert!(production.contains("Remove text widget"));
         assert!(production.contains("Canvas preview"));
         assert!(production.contains("Browser-source URL"));
+        assert!(production.contains("Copy URL"));
+        assert!(production.contains("Open in browser"));
+        assert!(production.contains("copy_url"));
+        assert!(production.contains("open_url"));
         assert!(production.contains("Save"));
+        assert!(production.contains("save_port_for_next_launch"));
+        assert!(production.contains("Current configured port"));
+        assert!(production.contains("Settings path"));
+        assert!(production.contains("MIN_PORT"));
+        assert!(production.contains("MAX_PORT"));
+        assert!(production.contains("Changes take effect after restarting Chikachika."));
         assert!(production.contains("Confirm delete"));
     }
 }

@@ -4,7 +4,7 @@
 
 `0.0.1` is the first functional vertical slice of the application. It remains an unreleased pre-release target: implementation and architecture may change substantially while this checklist is in progress.
 
-This document tracks milestone scope and completion. User-visible behavior is governed by [FDR-001: Overlay Editing and Local Browser Source](fdr/FDR-001-overlay-editing-and-local-browser-source.md). This checklist does not replace Feature Decision Records (FDRs) for feature behavior or Architecture Decision Records (ADRs) for architectural rationale.
+This document tracks milestone scope and completion. User-visible behavior is governed by [FDR-001: Overlay Editing and Local Browser Source](fdr/FDR-001-overlay-editing-and-local-browser-source.md), with the issue #8 URL and port additions recorded in [FDR-002: Browser-Source URL Actions and Port Settings](fdr/FDR-002-browser-source-url-actions-and-port-settings.md). This checklist does not replace Feature Decision Records (FDRs) for feature behavior or Architecture Decision Records (ADRs) for architectural rationale.
 
 ## Outcome
 
@@ -37,21 +37,31 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ### Local persistence (issues #3 and #4)
 
-- [x] Overlays and their supported settings are saved locally as one complete versioned snapshot.
+- [x] Overlays and their supported document state are saved locally as one complete versioned snapshot.
 - [x] A successful save clears dirty state.
 - [x] A failed save preserves the prior source file, keeps the in-memory change and dirty state, and displays a recoverable error.
 - [x] Saved overlays are restored after restarting the application.
 - [x] Persisted data has an explicit format version so incompatible pre-release changes can be detected and handled deliberately.
 - [x] Malformed or unsupported data and persistence errors are visible and non-destructive.
 
+### Application settings and port lifecycle (issue #8)
+
+The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server-settings-from-overlay-documents.md) and [FDR-002](fdr/FDR-002-browser-source-url-actions-and-port-settings.md).
+
+- [x] Server settings are persisted separately from overlay documents as a versioned `settings.json` envelope in the platform config location.
+- [x] Missing settings use the loopback default `127.0.0.1:51737`.
+- [x] Configured ports accept only the inclusive range `1..=65535`.
+- [x] Malformed or unsupported settings remain unchanged, are shown visibly, and prevent server startup instead of silently falling back.
+- [x] A port change is saved for the next launch and does not live-rebind the current server.
+- [x] No automatic alternate port is selected after a bind conflict.
+
 ### Browser-source hosting
 
 - [x] The application serves each overlay at its stable local URL after the issue #4 workspace registers it. *(The server route and workspace registration are implemented.)*
 - [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
 - [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(Editor publication, bounded SSE delivery, and client-side application are implemented and covered automatically; connected-browser and OBS validation remain pending in issue #10.)*
-- [ ] The application provides a straightforward way to copy the browser-source URL (**issue #8, pending**).
-- [ ] The application provides a straightforward way to open the exact browser output for preview or troubleshooting (**issue #8, pending**).
-- [ ] Configurable-port UX is provided and documented (**issue #8, pending**); the default remains loopback `127.0.0.1:51737`.
+- [x] The application provides a straightforward way to copy the exact selected browser-source URL only after server readiness (**issue #8**).
+- [x] The application provides a straightforward way to open the exact selected browser output for preview or troubleshooting only after server readiness (**issue #8**).
 - [x] Server startup and port conflicts are visible and non-destructive.
 - [x] The local server binds only to the loopback interface by default.
 
@@ -70,7 +80,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 - [ ] The application handles malformed or unsupported persisted data without silently losing user data. *(The non-destructive load behavior and visible blocked-startup path are implemented and covered automatically; milestone completion status has not yet been advanced.)*
 - [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
 - [ ] Setup, run, test, and OBS connection instructions are documented.
-- [ ] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(The implemented slice has been audited; a final pass remains required after issue #8 changes the URL workflow.)*
+- [x] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(Issue #8 settings, URL actions, and current ownership are documented.)*
 
 ## Explicitly Out of Scope
 
