@@ -4,6 +4,14 @@ This directory inventories the architecture that currently exists in the reposit
 
 Use [the architecture inventory skill](../../.agents/skills/architecture-inventory/SKILL.md) when current architecture changes or needs auditing. Architectural rationale belongs in [ADRs](../adr/INDEX.md), feature behavior belongs in [FDRs](../fdr/INDEX.md), and canonical definitions belong in the [glossary](../GLOSSARY.md).
 
+## Authoritative sources
+
+- [`src/main.rs`](../../src/main.rs)
+- [`src/app.rs`](../../src/app.rs)
+- [`src/model.rs`](../../src/model.rs)
+- [`src/persistence.rs`](../../src/persistence.rs)
+- [`src/server.rs`](../../src/server.rs)
+
 ## Inventory
 
 | Area | Document | Owns |
@@ -22,30 +30,21 @@ The current implementation is small enough to inventory in this index. `src/main
 
 The browser adapter in `src/browser.rs` projects model snapshots into one serializable complete browser representation and transparent self-contained HTML, and owns compile-time embedded assets. The client in `assets/browser/overlay.js` opens a same-origin EventSource at the current overlay path plus `/events`, listens for named `snapshot` events, ignores stale/duplicate revisions, and safely replaces the optional text widget through controlled DOM properties. `src/server.rs` owns `OverlayHub`: a synchronized map of current `Overlay` values and per-overlay Tokio watch senders. It provides synchronous registration, revision-checked publication, removal, model snapshot lookup, and subscribe-before-read receiver creation. The server runs on a dedicated current-thread Tokio runtime with I/O and time enabled, binds the normal endpoint to `127.0.0.1:51737`, exposes `GET /ping` as plain-text `pong`, serves registered overlays at `GET /overlay/{id}`, and streams complete bounded latest-value snapshots with SSE keepalives at `GET /overlay/{id}/events`. Overlay routes remain unavailable until an overlay is registered; all production binding is loopback-only.
 
-## Issues #4 and #5 application state
+## Application state and editor boundary
 
-The issue #4 workspace and issue #5 editor boundary is implemented across the application coordinator and native GUI. The coordinator owns the application overlay collection, selected-overlay state, dirty state, and latest user-visible error while using the existing model, persistence store, and hosting hub as adapters rather than maintaining duplicate document state:
+The application coordinator and native GUI jointly implement the workspace and editor boundary. The coordinator owns the application overlay collection, selected-overlay state, dirty state, and latest user-visible error while using the existing model, persistence store, and hosting hub as adapters rather than maintaining duplicate document state:
 
 - Startup restores and validates the complete versioned app-local snapshot before presenting a usable workspace. A missing file starts an empty collection; malformed or unsupported data blocks restoration without replacing the source file and requires source repair plus restart.
 - The workspace lists, selects, creates, renames, and deletes overlays only after explicit confirmation. Mutations preserve stable overlay identities and publish registered changes through the shared hub.
-- Saving writes a complete collection snapshot. A successful save clears dirty state; a failed save keeps the in-memory change and dirty state, preserves the previous source, and records a visible recoverable error.
+- Saving writes a complete collection snapshot. A successful save clears dirty state; a failed save keeps the in-memory change and dirty state, preserves the previous source, and records a visible recoverable error. Linux stores the source below `$XDG_DATA_HOME/chikachika` or `$HOME/.local/share/chikachika`; macOS stores it below `$HOME/Library/Application Support/Chikachika`.
 - Server startup and persistence failures remain visible and non-destructive. A server bind failure leaves the loaded workspace saveable without exposing a URL; the workspace exposes a browser-source URL only after the server has reported readiness and an overlay is selected and registered; normal shutdown coordinates with the server thread.
 - The native editor exposes the optional text widget's content, font size, RGBA color, alignment, and canvas position. It renders a fixed-aspect preview with browser-equivalent right-bounded text layout, accepts movement only through the widget hit target, preserves drag offset, clamps movement to model-valid canvas bounds, and routes accepted changes through `HeadlessCoordinator::update_overlay` for dirty-state tracking and hub publication.
 
-This boundary deliberately leaves browser-source copy/open controls plus configurable-port UX to issue #8. OBS end-to-end validation on macOS and Linux, broader platform validation, and representative idle CPU/memory measurements remain pending.
+Current limitations: the GUI exposes the selected URL as text but does not yet provide copy, open, or configurable-port controls. The editor's native preview uses egui text metrics, so exact glyph metrics and line breaking may differ from the authoritative browser renderer.
 
-Authoritative sources:
+## Related decisions
 
-- [`src/main.rs`](../../src/main.rs)
-- [`src/gui.rs`](../../src/gui.rs)
-- [`src/model.rs`](../../src/model.rs)
-- [`src/persistence.rs`](../../src/persistence.rs)
-- [`src/browser.rs`](../../src/browser.rs)
-- [`src/server.rs`](../../src/server.rs)
-- [`assets/browser/index.html`](../../assets/browser/index.html)
 - [`ADR-001`](../adr/ADR-001-one-native-process-gui-and-server.md)
 - [`ADR-002`](../adr/ADR-002-shared-overlay-model-and-stable-ids.md)
 - [`ADR-003`](../adr/ADR-003-versioned-app-local-json-persistence.md)
 - [`ADR-004`](../adr/ADR-004-loopback-sse-browser-delivery.md)
-
-Current limitations: stable URL copy/open controls and configurable-port UX, OBS validation, and platform resource measurements remain unimplemented or unverified. The editor's native preview uses egui text metrics, so exact glyph metrics and line breaking may differ from the authoritative browser renderer.

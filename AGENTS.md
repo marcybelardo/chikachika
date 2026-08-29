@@ -2,7 +2,7 @@
 
 This file is the root context and navigation entry point for contributors and coding agents. More specific `AGENTS.md` files may be added later; when present, they govern their directory subtree and must be listed here.
 
-> **Status:** Pre-release implementation of the initial GUI and loopback ping-server slice; the next target remains `0.0.1`.
+> **Status:** Pre-release implementation of the `0.0.1` vertical slice; the core workspace, editor, persistence, browser renderer, and loopback update path are implemented, while the URL workflow and release-platform validation remain pending.
 
 ## Context Map
 
@@ -43,7 +43,7 @@ This file is the root context and navigation entry point for contributors and co
 
 ## Project Status
 
-The project is in pre-release implementation. The repository contains a minimal native GUI and a loopback web server with a `GET /ping` health endpoint; the next target is `0.0.1`, whose requirements and progress are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
+The project is in pre-release implementation. The repository contains the native overlay workspace and one-widget editor, versioned app-local persistence, a transparent browser renderer, and stable loopback HTTP/SSE hosting. The next target is `0.0.1`; its remaining URL workflow, platform validation, documentation, and measurement requirements are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
 
 Until `0.0.1` is released, the architecture and implementation may change substantially. There are no compatibility or migration guarantees for unreleased code or data. Agents should change, replace, or remove existing code and structure when doing so produces a simpler, clearer, more functional product. Preserve an earlier approach only when it remains the best current choice, not merely because it already exists.
 
