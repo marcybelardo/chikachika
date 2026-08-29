@@ -18,7 +18,7 @@ Use [the glossary skill](../.agents/skills/glossary/SKILL.md) to look up, add, r
 
 ## Architecture
 
-No architecture terms recorded yet.
+**Settings** — Application configuration kept separate from overlay documents; in the issue #8 contract, versioned `settings.json` stores the loopback server port in the platform config location; see [ADR-005](adr/ADR-005-separate-server-settings-from-overlay-documents.md).
 
 ## Documentation
 

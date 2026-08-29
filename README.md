@@ -13,7 +13,7 @@ Implemented in the current target:
 - A `GET /ping` health endpoint that returns the plain-text response `pong`.
 - Automated Rust and documentation checks.
 - A framework-independent overlay model with stable UUID identities, fixed canvas validation, and zero-or-one text-widget support.
-- Versioned JSON persistence in the platform app-local data directory, including non-destructive malformed-data handling and safe replacement.
+- Versioned JSON persistence for overlay documents in the platform app-local data directory, including non-destructive malformed-data handling and safe replacement.
 - A compile-time embedded transparent browser renderer for the current overlay model.
 - Server-side hosting for registered overlays at stable `/overlay/{overlay-id}` HTML routes with bounded `/overlay/{overlay-id}/events` SSE snapshots.
 - Application-state wiring for overlay collection, selection, lifecycle actions, dirty/save state, visible errors, and server shutdown coordination.
@@ -32,7 +32,7 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 
 Still pending for `0.0.1`:
 
-- User-facing browser-source URL copy/open actions and configurable-port UX (**issue #8**); the current normal-run default remains loopback `127.0.0.1:51737`.
+- User-facing browser-source URL copy/open actions and configurable-port UX (**issue #8; implementation pending**). The accepted contract is recorded in [ADR-005](docs/adr/ADR-005-separate-server-settings-from-overlay-documents.md) and [FDR-002](docs/fdr/FDR-002-browser-source-url-actions-and-port-settings.md): settings are separate from overlay documents, missing settings use loopback `127.0.0.1:51737`, valid ports are `1..=65535`, malformed or unsupported settings block server startup without replacement or fallback, and saved port changes take effect only after restart. URL actions use the exact selected URL only after readiness.
 - OBS setup instructions and end-to-end OBS verification on macOS and Linux, including target-platform validation.
 - Idle CPU and memory measurements for a representative release/development build.
 
@@ -101,7 +101,7 @@ The application starts the web server before opening the GUI and prints its heal
 Chikachika web server listening at http://127.0.0.1:51737/ping
 ```
 
-The server is loopback-only and binds to `127.0.0.1:51737` during a normal application run. While the application is open, check its health endpoint from another terminal:
+In the current pre-issue-#8 build, the server is loopback-only and binds to `127.0.0.1:51737` during a normal application run. Issue #8 will preserve that endpoint when settings are missing while allowing a valid configured port; a saved port change takes effect on the next launch rather than rebinding the current server. While the application is open, check its health endpoint from another terminal:
 
 ```sh
 curl --fail --show-error http://127.0.0.1:51737/ping
@@ -113,7 +113,7 @@ The expected response is:
 pong
 ```
 
-The workspace restores saved overlays before presenting the editable collection, keeps selection and save/readiness status visible, and coordinates graceful local-server shutdown when the window closes. A selected overlay's browser-source URL is available only after the server reports readiness and the overlay is registered.
+The workspace restores saved overlays before presenting the editable collection, keeps selection and save/readiness status visible, and coordinates graceful local-server shutdown when the window closes. A selected overlay's browser-source URL is available only after the server reports readiness and the overlay is registered. Copy and open actions are part of issue #8 and are not yet available in this build.
 
 ## Local overlay data
 
@@ -124,7 +124,18 @@ Chikachika stores the complete versioned overlay snapshot in `overlays.json` und
 | Linux | `$XDG_DATA_HOME/chikachika/overlays.json` when `XDG_DATA_HOME` is an absolute path; otherwise `$HOME/.local/share/chikachika/overlays.json` |
 | macOS | `$HOME/Library/Application Support/Chikachika/overlays.json` |
 
-The application creates the parent directory when needed and never falls back to the repository or current working directory. Malformed or unsupported data is left unchanged and blocks workspace startup so it can be backed up or repaired; restart Chikachika after repairing the source file.
+The application creates the parent directory when needed and never falls back to the repository or current working directory. Malformed or unsupported data is left unchanged and blocks workspace startup so it can be backed up or repaired; restart Chikachika after repairing the source file. This file is the overlay document store and does not contain the loopback server settings introduced by issue #8.
+
+### Application settings (issue #8 target; pending implementation)
+
+The accepted issue #8 contract stores the loopback server port separately from overlay documents in a versioned `settings.json` envelope under the platform config location selected by `directories::ProjectDirs`. The settings adapter and controls are not yet present in this build.
+
+| Platform | Target path |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/chikachika/settings.json` when `XDG_CONFIG_HOME` is absolute; otherwise `$HOME/.config/chikachika/settings.json` |
+| macOS | `$HOME/Library/Application Support/Chikachika/settings.json` |
+
+Missing settings use `127.0.0.1:51737`. Only ports in the inclusive range `1..=65535` are valid. Malformed or unsupported settings remain unchanged, are shown as an error, and prevent server startup rather than silently falling back. A port change is saved for the next launch and does not live-rebind the current server; no alternate port is selected automatically.
 
 ## Test and checks
 
@@ -142,12 +153,12 @@ The Rust job runs formatting and locked all-target tests on Ubuntu and macOS. Th
 
 ## Current architecture
 
-The application is one native process. `src/main.rs` wires the application coordinator, shared `OverlayHub`, loopback server, and eframe/egui GUI; when the GUI exits, it coordinates graceful server shutdown and joins the dedicated server thread. The application coordinator owns the overlay collection, selected-overlay state, dirty state, and latest user-visible error while the framework-independent model in `src/model.rs` remains the authoritative overlay document. The GUI editor in `src/gui.rs` routes one-widget content, style, and position changes through the coordinator, renders a fixed-aspect preview, and publishes accepted revisions through the shared hub. The persistence adapter in `src/persistence.rs` stores versioned JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a serializable complete browser snapshot and self-contained transparent HTML with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and exposes `GET /ping`, registered-overlay HTML at `GET /overlay/{id}`, and bounded named-SSE snapshots at `GET /overlay/{id}/events`. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
+The application is one native process. `src/main.rs` wires the application coordinator, shared `OverlayHub`, loopback server, and eframe/egui GUI; when the GUI exits, it coordinates graceful server shutdown and joins the dedicated server thread. The application coordinator owns the overlay collection, selected-overlay state, dirty state, and latest user-visible error while the framework-independent model in `src/model.rs` remains the authoritative overlay document. The GUI editor in `src/gui.rs` routes one-widget content, style, and position changes through the coordinator, renders a fixed-aspect preview, and publishes accepted revisions through the shared hub. The persistence adapter in `src/persistence.rs` stores versioned overlay JSON in the platform app-local data directory, and `src/browser.rs` projects the model into a serializable complete browser snapshot and self-contained transparent HTML with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and exposes `GET /ping`, registered-overlay HTML at `GET /overlay/{id}`, and bounded named-SSE snapshots at `GET /overlay/{id}/events`. The accepted issue #8 settings boundary is documented in [ADR-005](docs/adr/ADR-005-separate-server-settings-from-overlay-documents.md); its separate config-backed adapter is not yet implemented in this build. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
 
 ## Pending documentation and validation
 
 The following documentation and validation remain pending until their corresponding implementation or verification work is complete:
 
-- Browser-source URL copy/open controls and configurable-port UX (**issue #8**).
+- Browser-source URL copy/open controls and configurable-port UX (**issue #8; accepted contract in [FDR-002](docs/fdr/FDR-002-browser-source-url-actions-and-port-settings.md), implementation pending**).
 - OBS setup and browser-source instructions, including macOS and Linux end-to-end checks and target-platform validation.
 - Release-oriented idle CPU and memory measurements, including the build and environment used for those measurements.
