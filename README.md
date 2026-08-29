@@ -108,6 +108,8 @@ The server is loopback-only and binds to `127.0.0.1:51737` when settings are mis
 curl --fail --show-error http://127.0.0.1:51737/ping
 ```
 
+If a different port is configured, replace `51737` with the running port shown in the settings panel.
+
 The expected response is:
 
 ```text
@@ -131,7 +133,7 @@ The application creates the parent directory when needed and never falls back to
 
 The application stores the loopback server port separately from overlay documents in a versioned `settings.json` envelope under the platform config location selected by `directories::ProjectDirs`.
 
-| Platform | Target path |
+| Platform | Path |
 |---|---|
 | Linux | `$XDG_CONFIG_HOME/chikachika/settings.json` when `XDG_CONFIG_HOME` is absolute; otherwise `$HOME/.config/chikachika/settings.json` |
 | macOS | `$HOME/Library/Application Support/Chikachika/settings.json` |
