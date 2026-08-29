@@ -31,8 +31,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    run_gui_with_shutdown(outcome, settings, server, |outcome, _settings| {
-        gui::run(outcome).map_err(|error| -> Box<dyn Error> { Box::new(error) })
+    run_gui_with_shutdown(outcome, settings, server, |outcome, settings| {
+        gui::run(outcome.with_settings(settings))
+            .map_err(|error| -> Box<dyn Error> { Box::new(error) })
     })
 }
 
