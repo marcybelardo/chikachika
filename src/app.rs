@@ -12,6 +12,8 @@ use crate::model::{CanvasSize, ModelError, Overlay, OverlayId};
 use crate::persistence::{PersistenceError, Store};
 use crate::server::{HubError, OverlayHub, PublishResult, ServerError};
 
+pub use crate::settings::SettingsState;
+
 /// The narrow hosting operations required by the application coordinator.
 ///
 /// The production implementation is [`OverlayHub`]. Keeping this boundary
@@ -172,6 +174,55 @@ impl BootstrapOutcome {
             Self::Ready(_) => None,
             Self::Blocked(failure) => Some(failure),
         }
+    }
+
+    /// Pairs the loaded overlay bootstrap result with application settings for
+    /// the GUI layer. Settings are kept separate from the overlay outcome so a
+    /// settings failure can leave a validated overlay workspace usable while
+    /// preventing only server startup.
+    pub fn with_settings(self, settings: SettingsState) -> ApplicationBootstrap {
+        ApplicationBootstrap {
+            outcome: self,
+            settings,
+        }
+    }
+}
+
+/// Startup state passed to the GUI as two independent application concerns:
+/// the overlay [`BootstrapOutcome`] and the application [`SettingsState`].
+///
+/// The settings state owns only next-launch configuration. Saving a port does
+/// not rebind a running server; the readiness address retained by the overlay
+/// coordinator remains authoritative for current browser-source URLs.
+pub struct ApplicationBootstrap {
+    outcome: BootstrapOutcome,
+    settings: SettingsState,
+}
+
+impl ApplicationBootstrap {
+    /// Creates startup state from an overlay outcome and loaded settings.
+    pub fn new(outcome: BootstrapOutcome, settings: SettingsState) -> Self {
+        Self { outcome, settings }
+    }
+
+    /// Borrows the overlay startup outcome for inspection.
+    pub fn outcome(&self) -> &BootstrapOutcome {
+        &self.outcome
+    }
+
+    /// Borrows settings for display and next-launch configuration controls.
+    pub fn settings(&self) -> &SettingsState {
+        &self.settings
+    }
+
+    /// Mutably borrows settings so a GUI can save a validated next-launch port.
+    pub fn settings_mut(&mut self) -> &mut SettingsState {
+        &mut self.settings
+    }
+
+    /// Splits startup state when the GUI takes ownership of both values.
+    pub fn into_parts(self) -> (BootstrapOutcome, SettingsState) {
+        (self.outcome, self.settings)
     }
 }
 
@@ -437,6 +488,14 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
     /// Records a persistent server startup failure while retaining the loaded workspace.
     pub fn record_server_error(&mut self, error: ServerError) {
         self.server_error = Some(CoordinatorError::Server(error).to_string());
+    }
+
+    /// Records a settings-load failure while retaining the loaded overlay
+    /// workspace. This is intentionally kept as a persistent startup error so
+    /// a GUI that has not yet adopted [`SettingsState`] can still explain why
+    /// the local server was not started.
+    pub fn record_settings_error(&mut self, error: &crate::settings::SettingsError) {
+        self.server_error = Some(format!("could not load application settings: {error}"));
     }
 
     /// Returns the bound address only after the top-level server startup has
