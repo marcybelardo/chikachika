@@ -287,13 +287,20 @@ impl ChikachikaApp {
                 ui.add_space(8.0);
                 ui.label("Browser-source URL");
                 if let Some(url) = coordinator.selected_url() {
-                    ui.monospace(url);
+                    ui.monospace(&url);
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy URL").clicked() {
+                            copy_url(ui.ctx(), &url);
+                        }
+                        if ui.button("Open in browser").clicked() {
+                            open_url(ui.ctx(), &url);
+                        }
+                    });
                 } else {
                     ui.label(
                     "Unavailable until the local server successfully binds and reports readiness.",
                 );
                 }
-                ui.label("URL actions and configurable-port controls are deferred to issue #8.");
             });
         });
 
@@ -767,6 +774,40 @@ fn save_workspace(coordinator: Option<&mut HeadlessCoordinator>) -> Result<(), S
         .map_err(|error| error.to_string())
 }
 
+fn copy_url(context: &egui::Context, url: &str) {
+    context.copy_text(url.to_owned());
+}
+
+fn open_url(context: &egui::Context, url: &str) {
+    context.open_url(egui::OpenUrl::same_tab(url));
+}
+
+#[cfg(test)]
+fn copy_selected_url(
+    context: &egui::Context,
+    coordinator: Option<&HeadlessCoordinator>,
+) -> Result<(), String> {
+    let url = coordinator
+        .ok_or_else(|| "workspace is not available".to_owned())?
+        .selected_url()
+        .ok_or_else(|| "browser-source URL is unavailable".to_owned())?;
+    copy_url(context, &url);
+    Ok(())
+}
+
+#[cfg(test)]
+fn open_selected_url(
+    context: &egui::Context,
+    coordinator: Option<&HeadlessCoordinator>,
+) -> Result<(), String> {
+    let url = coordinator
+        .ok_or_else(|| "workspace is not available".to_owned())?
+        .selected_url()
+        .ok_or_else(|| "browser-source URL is unavailable".to_owned())?;
+    open_url(context, &url);
+    Ok(())
+}
+
 #[cfg(test)]
 fn select_named(coordinator: Option<&mut HeadlessCoordinator>, name: &str) -> Result<(), String> {
     let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
@@ -917,6 +958,8 @@ fn render_delete_dialog(
 pub struct ScenarioHarness {
     context: egui::Context,
     app: ChikachikaApp,
+    last_copied_text: String,
+    last_open_url: Option<egui::OpenUrl>,
 }
 
 #[cfg(test)]
@@ -926,15 +969,19 @@ impl ScenarioHarness {
         Self {
             context: egui::Context::default(),
             app: ChikachikaApp::from_bootstrap(outcome),
+            last_copied_text: String::new(),
+            last_open_url: None,
         }
     }
 
     /// Advances one egui frame.
     pub fn frame(&mut self) {
         let app = &mut self.app;
-        let _ = self
+        let output = self
             .context
             .run(egui::RawInput::default(), |context| app.render(context));
+        self.last_copied_text = output.platform_output.copied_text;
+        self.last_open_url = output.platform_output.open_url;
     }
 
     /// Returns the current adapter state for semantic assertions.
@@ -952,9 +999,31 @@ impl ScenarioHarness {
     /// helpers as the egui event handlers without requiring native-window or
     /// pixel-coordinate automation.
     pub fn click(&mut self, label: &str) -> Result<(), String> {
-        self.app.activate(label)?;
+        match label {
+            "Copy URL" => copy_selected_url(&self.context, self.app.coordinator.as_ref())?,
+            "Open in browser" => open_selected_url(&self.context, self.app.coordinator.as_ref())?,
+            _ => self.app.activate(label)?,
+        }
         self.frame();
         Ok(())
+    }
+
+    /// Returns the clipboard text emitted by the most recent semantic frame.
+    pub fn copied_text(&self) -> &str {
+        &self.last_copied_text
+    }
+
+    /// Returns the browser URL emitted by the most recent semantic frame.
+    pub fn opened_url(&self) -> Option<&str> {
+        self.last_open_url
+            .as_ref()
+            .map(|open_url| open_url.url.as_str())
+    }
+
+    /// Returns whether the most recent browser-opening output requested a new
+    /// tab rather than the current tab.
+    pub fn opens_in_new_tab(&self) -> Option<bool> {
+        self.last_open_url.as_ref().map(|open_url| open_url.new_tab)
     }
 
     /// Applies deterministic form values used by adapter scenarios.
@@ -985,7 +1054,6 @@ impl ScenarioHarness {
             "Overlays".to_owned(),
             "Create overlay".to_owned(),
             "Overlay details".to_owned(),
-            "URL actions and configurable-port controls are deferred to issue #8.".to_owned(),
         ];
         if coordinator.is_dirty() {
             visible.extend(["Unsaved changes".to_owned(), "Save".to_owned()]);
@@ -1011,6 +1079,7 @@ impl ScenarioHarness {
             ]);
             if let Some(url) = coordinator.selected_url() {
                 visible.push(url);
+                visible.extend(["Copy URL".to_owned(), "Open in browser".to_owned()]);
             } else {
                 visible.push(
                     "Unavailable until the local server successfully binds and reports readiness."
@@ -1233,6 +1302,8 @@ mod tests {
                 .selected_url()
                 .is_none()
         );
+        assert!(!harness.has_label("Copy URL"));
+        assert!(!harness.has_label("Open in browser"));
         assert!(harness.has_label(
             "Unavailable until the local server successfully binds and reports readiness."
         ));
@@ -1256,6 +1327,76 @@ mod tests {
             )
         );
         assert!(harness.has_label("Browser-source URL"));
+        assert!(harness.has_label("Copy URL"));
+        assert!(harness.has_label("Open in browser"));
+    }
+
+    #[test]
+    fn url_actions_emit_the_exact_selected_url() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.frame();
+        assert!(!harness.has_label("Copy URL"));
+        assert!(!harness.has_label("Open in browser"));
+        assert!(harness.click("Copy URL").is_err());
+        assert!(harness.click("Open in browser").is_err());
+        assert_eq!(harness.copied_text(), "");
+        assert_eq!(harness.opened_url(), None);
+
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        assert!(harness.click("Copy URL").is_err());
+        assert!(harness.click("Open in browser").is_err());
+        assert_eq!(harness.copied_text(), "");
+        assert_eq!(harness.opened_url(), None);
+
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .set_server_address("127.0.0.1:51737".parse().expect("socket address"));
+        harness.frame();
+        let url = harness.app().coordinator().unwrap().selected_url().unwrap();
+
+        harness.click("Copy URL").expect("copy selected URL");
+        assert_eq!(harness.copied_text(), url);
+        assert_eq!(harness.opened_url(), None);
+
+        harness
+            .click("Open in browser")
+            .expect("open selected URL in browser");
+        assert_eq!(harness.copied_text(), "");
+        assert_eq!(harness.opened_url(), Some(url.as_str()));
+        assert_eq!(harness.opens_in_new_tab(), Some(false));
+    }
+
+    #[test]
+    fn url_actions_hide_when_hosted_overlay_diverges_from_workspace() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        let coordinator = harness.app_mut().coordinator_mut().unwrap();
+        coordinator.set_server_address("127.0.0.1:51737".parse().expect("socket address"));
+        let overlay_id = coordinator.selected_overlay_id().unwrap();
+        coordinator
+            .hub()
+            .remove(overlay_id)
+            .expect("remove hosted overlay");
+        harness.frame();
+
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_url()
+                .is_none()
+        );
+        assert!(!harness.has_label("Copy URL"));
+        assert!(!harness.has_label("Open in browser"));
+        assert!(harness.click("Copy URL").is_err());
+        assert!(harness.click("Open in browser").is_err());
     }
 
     #[test]
@@ -1490,20 +1631,22 @@ mod tests {
     }
 
     #[test]
-    fn text_editor_controls_are_present_while_issue_8_controls_remain_absent() {
+    fn text_editor_and_url_controls_are_present_without_port_controls() {
         let source = include_str!("gui.rs");
         let production = source
             .split("/// A small native-window-free semantic scenario harness")
             .next()
             .expect("production adapter precedes its tests");
-        assert!(!production.contains("copy_url_button"));
-        assert!(!production.contains("open_url_button"));
         assert!(!production.contains("port_control"));
         assert!(production.contains("TextEdit::multiline"));
         assert!(production.contains("Add text widget"));
         assert!(production.contains("Remove text widget"));
         assert!(production.contains("Canvas preview"));
         assert!(production.contains("Browser-source URL"));
+        assert!(production.contains("Copy URL"));
+        assert!(production.contains("Open in browser"));
+        assert!(production.contains("copy_url"));
+        assert!(production.contains("open_url"));
         assert!(production.contains("Save"));
         assert!(production.contains("Confirm delete"));
     }
