@@ -1,8 +1,8 @@
 # `0.0.1` Milestone
 
-**Status:** In progress
+**Status:** Complete
 
-`0.0.1` is the first functional vertical slice of the application. It remains an unreleased pre-release target: implementation and architecture may change substantially while this checklist is in progress.
+`0.0.1` is the first functional vertical slice of the application. The milestone is complete but remains unpublished; release publication is separate from this completed checklist.
 
 This document tracks milestone scope and completion. User-visible behavior is governed by [FDR-001: Overlay Editing and Local Browser Source](fdr/FDR-001-overlay-editing-and-local-browser-source.md), with the issue #8 URL and port additions recorded in [FDR-002: Browser-Source URL Actions and Port Settings](fdr/FDR-002-browser-source-url-actions-and-port-settings.md). This checklist does not replace Feature Decision Records (FDRs) for feature behavior or Architecture Decision Records (ADRs) for architectural rationale.
 
@@ -78,7 +78,7 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 - [x] Automated tests cover the persisted overlay model and its round-trip behavior.
 - [x] Automated tests cover the browser representation or update protocol where practical.
 - [x] The application handles malformed or unsupported persisted data without silently losing user data.
-- [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
+- [x] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded. See the [0.0.1 idle resource measurement](measurements/0.0.1-idle-resource-usage.md).
 - [x] Setup, run, test, and OBS connection instructions are documented.
 - [x] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(Issue #8 settings, URL actions, and current ownership are documented.)*
 

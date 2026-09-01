@@ -2,7 +2,7 @@
 
 This file is the root context and navigation entry point for contributors and coding agents. More specific `AGENTS.md` files may be added later; when present, they govern their directory subtree and must be listed here.
 
-> **Status:** Pre-release completion work for the `0.0.1` vertical slice; the implementation, required macOS/Linux OBS validation, and user documentation are complete, while final resource measurements remain pending.
+> **Status:** The `0.0.1` vertical-slice milestone is complete; release publication remains pending.
 
 ## Context Map
 
@@ -43,7 +43,7 @@ This file is the root context and navigation entry point for contributors and co
 
 ## Project Status
 
-The project is in pre-release completion work. The repository contains the native overlay workspace and one-widget editor, versioned app-local persistence, a transparent browser renderer, stable loopback HTTP/SSE hosting, completed macOS/Linux OBS workflow validation, and user-facing setup and troubleshooting guides. The next target is `0.0.1`; its remaining resource-measurement requirement is tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
+The `0.0.1` vertical-slice milestone is complete. The repository contains the native overlay workspace and one-widget editor, versioned app-local persistence, a transparent browser renderer, stable loopback HTTP/SSE hosting, completed macOS/Linux OBS workflow validation, user-facing setup and troubleshooting guides, and representative idle resource measurements. Release publication has not yet been recorded; completed requirements and evidence are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
 
 Until `0.0.1` is released, the architecture and implementation may change substantially. There are no compatibility or migration guarantees for unreleased code or data. Agents should change, replace, or remove existing code and structure when doing so produces a simpler, clearer, more functional product. Preserve an earlier approach only when it remains the best current choice, not merely because it already exists.
 
