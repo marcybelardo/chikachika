@@ -1,8 +1,8 @@
 # `0.0.1` Milestone
 
-**Status:** In progress
+**Status:** Complete
 
-`0.0.1` is the first functional vertical slice of the application. It remains an unreleased pre-release target: implementation and architecture may change substantially while this checklist is in progress.
+`0.0.1` is the first functional vertical slice of the application. The milestone is complete but remains unpublished; release publication is separate from this completed checklist.
 
 This document tracks milestone scope and completion. User-visible behavior is governed by [FDR-001: Overlay Editing and Local Browser Source](fdr/FDR-001-overlay-editing-and-local-browser-source.md), with the issue #8 URL and port additions recorded in [FDR-002: Browser-Source URL Actions and Port Settings](fdr/FDR-002-browser-source-url-actions-and-port-settings.md). This checklist does not replace Feature Decision Records (FDRs) for feature behavior or Architecture Decision Records (ADRs) for architectural rationale.
 
@@ -14,7 +14,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ### Application and overlay management (issue #4)
 
-- [ ] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux. *(macOS launch was operator-validated on 2026-09-01; Linux remains pending in issue #10.)*
+- [x] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux.
 - [x] Startup restores and validates the complete versioned app-local overlay snapshot before presenting a usable workspace; a missing store starts an empty collection.
 - [x] Malformed or unsupported saved data blocks restoration without replacing the source file, and the failure remains visible and non-destructive; source repair requires an application restart.
 - [x] The workspace lists and selects overlays while preserving stable selection state independently of dirty/save state.
@@ -59,7 +59,7 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 
 - [x] The application serves each overlay at its stable local URL after the issue #4 workspace registers it. *(The server route and workspace registration are implemented.)*
 - [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
-- [x] Changes made in the editor appear in a connected browser source without a manual page refresh. *(Implemented and covered automatically; operator-validated in OBS on macOS on 2026-09-01.)*
+- [x] Changes made in the editor appear in a connected browser source without a manual page refresh.
 - [x] The application provides a straightforward way to copy the exact selected browser-source URL only after server readiness (**issue #8**).
 - [x] The application provides a straightforward way to open the exact selected browser output for preview or troubleshooting only after server readiness (**issue #8**).
 - [x] Server startup and port conflicts are visible and non-destructive.
@@ -67,21 +67,19 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 
 ### OBS verification
 
-- [x] On macOS, a served overlay is exercised end to end in OBS as a browser source using the displayed URL. *(Operator-validated on 2026-09-01.)*
-- [ ] On Linux, a served overlay is exercised end to end in OBS as a browser source using the displayed URL.
-- [ ] Text content and supported styling render correctly in OBS on both required targets. *(Font size, RGBA color, alignment, and position were operator-validated on macOS on 2026-09-01; Linux remains pending. Font-family selection is not part of the supported 0.0.1 editor.)*
-- [ ] Transparency works in OBS on both required targets. *(Operator-validated on macOS on 2026-09-01; Linux remains pending.)*
-- [ ] Live editor changes appear in OBS without recreating or manually refreshing the browser source on both required targets. *(Operator-validated on macOS on 2026-09-01; Linux remains pending.)*
-
-macOS validation also confirmed that the application saves the overlay collection and restores it in a new application session. Issue #10 remains open for the corresponding Linux workflow and the complete two-platform gate.
+- [x] On macOS, a served overlay is exercised end to end in OBS as a browser source using the displayed URL.
+- [x] On Linux, a served overlay is exercised end to end in OBS as a browser source using the displayed URL.
+- [x] Text content and supported styling render correctly in OBS on both required targets.
+- [x] Transparency works in OBS on both required targets.
+- [x] Live editor changes appear in OBS without recreating or manually refreshing the browser source on both required targets.
 
 ## Quality Requirements
 
-- [ ] Automated tests cover the persisted overlay model and its round-trip behavior. *(Round-trip coverage is implemented and passes on both CI targets; milestone completion status has not yet been advanced.)*
+- [x] Automated tests cover the persisted overlay model and its round-trip behavior.
 - [x] Automated tests cover the browser representation or update protocol where practical.
-- [ ] The application handles malformed or unsupported persisted data without silently losing user data. *(The non-destructive load behavior and visible blocked-startup path are implemented and covered automatically; milestone completion status has not yet been advanced.)*
-- [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
-- [ ] Setup, run, test, and OBS connection instructions are documented.
+- [x] The application handles malformed or unsupported persisted data without silently losing user data.
+- [x] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded. See the [0.0.1 idle resource measurement](measurements/0.0.1-idle-resource-usage.md).
+- [x] Setup, run, test, and OBS connection instructions are documented.
 - [x] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(Issue #8 settings, URL actions, and current ownership are documented.)*
 
 ## Explicitly Out of Scope

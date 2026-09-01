@@ -42,7 +42,7 @@ The application coordinator and native GUI jointly implement the workspace and e
 - Server startup and persistence failures remain visible and non-destructive. A server bind failure leaves the loaded workspace saveable without exposing a URL; the workspace exposes a browser-source URL only after the server has reported readiness and an overlay is selected and registered; normal shutdown coordinates with the server thread.
 - The native editor exposes the optional text widget's content, font size, RGBA color, alignment, and canvas position. It renders a fixed-aspect preview with browser-equivalent right-bounded text layout, accepts movement only through the widget hit target, preserves drag offset, clamps movement to model-valid canvas bounds, and routes accepted changes through `HeadlessCoordinator::update_overlay` for dirty-state tracking and hub publication.
 
-Current limitations: the editor's native preview uses egui text metrics, so exact glyph metrics and line breaking may differ from the authoritative browser renderer. OBS setup and end-to-end target-platform validation remain outside this implementation and are tracked in the 0.0.1 milestone checklist.
+Current limitation: the editor's native preview uses egui text metrics, so exact glyph metrics and line breaking may differ from the authoritative browser renderer.
 
 ## Settings and URL-action boundary
 

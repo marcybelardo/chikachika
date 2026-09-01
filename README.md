@@ -4,7 +4,7 @@ Chikachika is a pre-release local-first desktop application for creating and usi
 
 ## Status
 
-**Current status: pre-release implementation (target: `0.0.1`).**
+**Current status: `0.0.1` milestone complete; release publication remains pending.**
 
 Implemented in the current target:
 
@@ -32,12 +32,11 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 - Keep startup, load, save, and shutdown failures visible and non-destructive so a user can recover without losing in-memory work or persisted data; malformed startup sources require repair and restart.
 - Preserve each overlay's stable identity and browser-source URL across renames and application restarts.
 
-Still pending for `0.0.1`:
-
-- OBS setup instructions and Linux end-to-end OBS verification. The macOS application, persistence, styling, transparency, and live-update workflow was operator-validated on 2026-09-01.
-- Idle CPU and memory measurements for a representative release/development build.
-
 The intended product scope and completion requirements are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md). See the [current architecture inventory](docs/architecture/INDEX.md) for implemented component boundaries and operational contracts.
+
+## User guide
+
+The [Chikachika user guide](docs/user/README.md) covers source-based macOS/Linux setup, creating and saving overlays, OBS Browser Source configuration, port behavior, saved-data locations, and troubleshooting.
 
 ## Setup
 
@@ -158,9 +157,9 @@ The Rust job runs formatting and locked all-target tests on Ubuntu and macOS. Th
 
 The application is one native process. `src/main.rs` wires the application coordinator, shared `OverlayHub`, loopback server, and eframe/egui GUI; when the GUI exits, it coordinates graceful server shutdown and joins the dedicated server thread. The application coordinator owns the overlay collection, selected-overlay state, dirty state, latest user-visible error, and readiness address while the framework-independent model in `src/model.rs` remains the authoritative overlay document. The GUI editor in `src/gui.rs` routes one-widget content, style, and position changes through the coordinator, renders a fixed-aspect preview, publishes accepted revisions through the shared hub, gates exact URL actions on readiness, and owns the restart-bound port settings controls. The persistence adapter in `src/persistence.rs` stores versioned overlay JSON in the platform app-local data directory; `src/settings.rs` stores a separate versioned port envelope in the platform config-local directory; and `src/browser.rs` projects the model into a serializable complete browser snapshot and self-contained transparent HTML with compile-time embedded assets. The server runs on a dedicated current-thread Tokio runtime and exposes `GET /ping`, registered-overlay HTML at `GET /overlay/{id}`, and bounded named-SSE snapshots at `GET /overlay/{id}/events`. The [architecture inventory](docs/architecture/INDEX.md) is the authoritative current-state reference.
 
-## Pending documentation and validation
+## Release validation
 
-The following documentation and validation remain pending until their corresponding implementation or verification work is complete:
-
-- OBS setup and browser-source instructions, plus the remaining Linux end-to-end check. The macOS workflow was operator-validated on 2026-09-01.
-- Release-oriented idle CPU and memory measurements, including the build and environment used for those measurements.
+The `0.0.1` implementation, documentation, macOS/Linux OBS workflows, and
+representative idle resource behavior are validated. See the
+[milestone checklist](docs/TODO-0-0-1.md) and
+[idle resource measurement](docs/measurements/0.0.1-idle-resource-usage.md).
