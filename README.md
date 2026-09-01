@@ -34,10 +34,13 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 
 Still pending for `0.0.1`:
 
-- Final user-facing OBS setup and troubleshooting instructions.
 - Idle CPU and memory measurements for a representative release/development build.
 
 The intended product scope and completion requirements are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md). See the [current architecture inventory](docs/architecture/INDEX.md) for implemented component boundaries and operational contracts.
+
+## User guide
+
+The [Chikachika user guide](docs/user/README.md) covers source-based macOS/Linux setup, creating and saving overlays, OBS Browser Source configuration, port behavior, saved-data locations, and troubleshooting.
 
 ## Setup
 
@@ -160,7 +163,6 @@ The application is one native process. `src/main.rs` wires the application coord
 
 ## Pending documentation and validation
 
-The following documentation and validation remain pending until their corresponding implementation or verification work is complete:
+The following release validation remains pending:
 
-- Final user-facing OBS setup and browser-source troubleshooting instructions.
 - Release-oriented idle CPU and memory measurements, including the build and environment used for those measurements.

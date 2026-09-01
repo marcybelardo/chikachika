@@ -79,7 +79,7 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 - [x] Automated tests cover the browser representation or update protocol where practical.
 - [x] The application handles malformed or unsupported persisted data without silently losing user data.
 - [ ] Idle CPU and memory behavior are measured in a representative development build and any material concerns are recorded.
-- [ ] Setup, run, test, and OBS connection instructions are documented.
+- [x] Setup, run, test, and OBS connection instructions are documented.
 - [x] The glossary, architecture inventory, ADRs, and FDRs are current for the implemented vertical slice. *(Issue #8 settings, URL actions, and current ownership are documented.)*
 
 ## Explicitly Out of Scope
