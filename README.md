@@ -34,7 +34,7 @@ The native workspace uses the shared model, persistence store, and hosting hub r
 
 Still pending for `0.0.1`:
 
-- OBS setup instructions and end-to-end OBS verification on macOS and Linux, including target-platform validation.
+- OBS setup instructions and Linux end-to-end OBS verification. The macOS application, persistence, styling, transparency, and live-update workflow was operator-validated on 2026-09-01.
 - Idle CPU and memory measurements for a representative release/development build.
 
 The intended product scope and completion requirements are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md). See the [current architecture inventory](docs/architecture/INDEX.md) for implemented component boundaries and operational contracts.
@@ -162,5 +162,5 @@ The application is one native process. `src/main.rs` wires the application coord
 
 The following documentation and validation remain pending until their corresponding implementation or verification work is complete:
 
-- OBS setup and browser-source instructions, including macOS and Linux end-to-end checks and target-platform validation.
+- OBS setup and browser-source instructions, plus the remaining Linux end-to-end check. The macOS workflow was operator-validated on 2026-09-01.
 - Release-oriented idle CPU and memory measurements, including the build and environment used for those measurements.

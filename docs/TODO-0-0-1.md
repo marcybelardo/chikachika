@@ -14,7 +14,7 @@ A streamer can create a basic text overlay in the desktop application, save it l
 
 ### Application and overlay management (issue #4)
 
-- [ ] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux. *(Target-platform validation remains pending.)*
+- [ ] The desktop application opens successfully on both required 0.0.1 targets: macOS and Linux. *(macOS launch was operator-validated on 2026-09-01; Linux remains pending in issue #10.)*
 - [x] Startup restores and validates the complete versioned app-local overlay snapshot before presenting a usable workspace; a missing store starts an empty collection.
 - [x] Malformed or unsupported saved data blocks restoration without replacing the source file, and the failure remains visible and non-destructive; source repair requires an application restart.
 - [x] The workspace lists and selects overlays while preserving stable selection state independently of dirty/save state.
@@ -59,7 +59,7 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 
 - [x] The application serves each overlay at its stable local URL after the issue #4 workspace registers it. *(The server route and workspace registration are implemented.)*
 - [x] The browser output has a transparent background and respects the overlay's configured canvas dimensions.
-- [ ] Changes made in the editor appear in a connected browser source without a manual page refresh. *(Editor publication, bounded SSE delivery, and client-side application are implemented and covered automatically; connected-browser and OBS validation remain pending in issue #10.)*
+- [x] Changes made in the editor appear in a connected browser source without a manual page refresh. *(Implemented and covered automatically; operator-validated in OBS on macOS on 2026-09-01.)*
 - [x] The application provides a straightforward way to copy the exact selected browser-source URL only after server readiness (**issue #8**).
 - [x] The application provides a straightforward way to open the exact selected browser output for preview or troubleshooting only after server readiness (**issue #8**).
 - [x] Server startup and port conflicts are visible and non-destructive.
@@ -67,11 +67,13 @@ The following requirements are accepted in [ADR-005](adr/ADR-005-separate-server
 
 ### OBS verification
 
-- [ ] On macOS, a served overlay is exercised end to end in OBS as a browser source using the displayed URL.
+- [x] On macOS, a served overlay is exercised end to end in OBS as a browser source using the displayed URL. *(Operator-validated on 2026-09-01.)*
 - [ ] On Linux, a served overlay is exercised end to end in OBS as a browser source using the displayed URL.
-- [ ] Text content and supported styling render correctly in OBS on both required targets.
-- [ ] Transparency works in OBS on both required targets.
-- [ ] Live editor changes appear in OBS without recreating or manually refreshing the browser source on both required targets.
+- [ ] Text content and supported styling render correctly in OBS on both required targets. *(Font size, RGBA color, alignment, and position were operator-validated on macOS on 2026-09-01; Linux remains pending. Font-family selection is not part of the supported 0.0.1 editor.)*
+- [ ] Transparency works in OBS on both required targets. *(Operator-validated on macOS on 2026-09-01; Linux remains pending.)*
+- [ ] Live editor changes appear in OBS without recreating or manually refreshing the browser source on both required targets. *(Operator-validated on macOS on 2026-09-01; Linux remains pending.)*
+
+macOS validation also confirmed that the application saves the overlay collection and restores it in a new application session. Issue #10 remains open for the corresponding Linux workflow and the complete two-platform gate.
 
 ## Quality Requirements
 
