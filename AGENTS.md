@@ -18,6 +18,7 @@ This file is the root context and navigation entry point for contributors and co
 |---|---|---|
 | Initial product direction | [`docs/Project Structure.md`](docs/Project%20Structure.md) | Early high-level product and vertical-slice notes |
 | `0.0.1` milestone | [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md) | Requirements and completion checklist for the first release |
+| `0.0.2` milestone | [`docs/TODO-0-0-2.md`](docs/TODO-0-0-2.md) | Confirmed editor workspace scope and implementation checklist |
 | Canonical terminology | [`docs/GLOSSARY.md`](docs/GLOSSARY.md) | Current project-specific terms and meanings |
 | Architecture decisions | [`docs/adr/INDEX.md`](docs/adr/INDEX.md) | Append-only cross-cutting technical decisions |
 | Feature decisions | [`docs/fdr/INDEX.md`](docs/fdr/INDEX.md) | Append-only feature behavior and design decisions |
