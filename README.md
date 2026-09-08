@@ -163,3 +163,8 @@ The `0.0.1` implementation, documentation, macOS/Linux OBS workflows, and
 representative idle resource behavior are validated. See the
 [milestone checklist](docs/TODO-0-0-1.md) and
 [idle resource measurement](docs/measurements/0.0.1-idle-resource-usage.md).
+
+Releases are published from existing annotated tags by a manually triggered
+GitHub Actions workflow. It repeats the Linux/macOS and documentation checks,
+then uses GitHub's generated release notes. See the
+[release guide](docs/RELEASING.md) for the tag, publication, and freeze process.

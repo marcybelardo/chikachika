@@ -691,6 +691,28 @@ class CollaborationArtifactContractTests(unittest.TestCase):
         self.assertLess(documentation.index("uses: actions/checkout@"), documentation.index("python3 scripts/check_docs.py"))
         self.assertLess(documentation.index("uses: actions/checkout@"), documentation.index("python3 -m unittest"))
 
+    def test_release_workflow_contract(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        release_config = (ROOT / ".github" / "release.yml").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+
+        self.assertRegex(workflow, r"(?m)^  workflow_dispatch:\s*$")
+        self.assertIn("ref: ${{ inputs.tag }}", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn("contents: read", workflow)
+        publish = self._workflow_job(workflow, "publish")
+        self.assertIn("needs: [rust, documentation]", publish)
+        self.assertIn("contents: write", publish)
+        self.assertIn("--verify-tag", publish)
+        self.assertIn("--generate-notes", publish)
+        self.assertIn("gh release create", publish)
+        self.assertIn("gh release view", publish)
+        self.assertIn("Cargo package version", workflow)
+        self.assertIn("existing annotated Git tags", guide)
+        self.assertIn("Never move, replace, or reuse", guide)
+        for label in ("enhancement", "bug", "documentation", '"*"'):
+            self.assertIn(f"- {label}", release_config)
+
     def test_setup_artifact_mutation_contract(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
