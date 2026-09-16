@@ -2,9 +2,9 @@
 
 **Status:** Planned — implementation pending
 
-`0.0.2` develops the completed vertical slice into a usable overlay composition workspace. The central canvas, left widget list, and right properties inspector are the agreed layout direction. Milestone scope was confirmed on 2026-09-08; implementation details listed below must be settled before dependent work begins.
+`0.0.2` develops the completed vertical slice into a usable overlay composition workspace. The central canvas, left widget list, and right properties inspector are the agreed layout direction. Milestone scope was confirmed on 2026-09-08, and the dependent design contracts were accepted on 2026-09-17. Implementation remains pending.
 
-This document tracks milestone scope and completion. It does not replace Feature Decision Records (FDRs) for user-visible behavior or Architecture Decision Records (ADRs) for architectural rationale. The existing [0.0.1 milestone](TODO-0-0-1.md), [FDR-001](fdr/FDR-001-overlay-editing-and-local-browser-source.md), and [FDR-002](fdr/FDR-002-browser-source-url-actions-and-port-settings.md) describe the baseline. New or superseding records must establish changed contracts before their implementation; accepted records remain immutable.
+This document tracks milestone scope and completion. It does not replace Feature Decision Records (FDRs) for user-visible behavior or Architecture Decision Records (ADRs) for architectural rationale. [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md), [FDR-004](fdr/FDR-004-bundled-offline-text-fonts.md), and [FDR-005](fdr/FDR-005-singleton-native-settings-window.md) govern the accepted 0.0.2 behavior. [ADR-006](adr/ADR-006-ordered-authoritative-widget-model.md), [ADR-007](adr/ADR-007-version-2-overlay-document-persistence.md), [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md), and [ADR-009](adr/ADR-009-secondary-native-settings-viewport-lifecycle.md) govern its architecture. These records resolve design; their Accepted status does not claim runtime implementation.
 
 ## Outcome
 
@@ -88,7 +88,7 @@ A streamer can compose an overlay from multiple text widgets, easily identify an
 
 ## Confirmed Scope
 
-The following choices were confirmed on 2026-09-08. They define milestone scope; the corresponding ADRs/FDRs still need to record changed contracts before implementation.
+The following choices were confirmed on 2026-09-08 and completed as accepted design contracts on 2026-09-17. Runtime implementation and verification remain pending.
 
 | Decision | Scope |
 |---|---|
@@ -101,11 +101,14 @@ The following choices were confirmed on 2026-09-08. They define milestone scope;
 
 Zoom/pan controls, widget hiding/locking, and more advanced selection remain deferred. Fit-to-window preview is the baseline.
 
-### Details to settle during design
+### Resolved design contracts
 
-- Define undo history ownership across overlays, history limits, text-edit grouping, and save/dirty behavior before implementing mutations. Determine how overlay lifecycle actions interact with widget history.
-- Select the bundled font families, supported character coverage, and licenses before integrating assets.
-- Define the minimum usable window size and concrete appearance treatment during workspace design.
+- [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) and [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md) define one coordinator-owned workspace timeline of 100 completed actions, text/gesture grouping, overlay lifecycle, selection restoration, content-based dirty state, fresh delivery revisions, and close recovery.
+- [FDR-004](fdr/FDR-004-bundled-offline-text-fonts.md) selects pinned Noto Sans Regular and JetBrains Mono Regular assets with bounded Latin-focused coverage, SIL OFL 1.1 notice obligations, U+FFFD replacement, and explicit issue #26 binary/runtime verification.
+- [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) defines a dark neutral workspace at 1280×800 initial and 1024×640 minimum logical size, including panel, spacing, typography, checkerboard, selection, hover, disabled, and error targets.
+- [ADR-006](adr/ADR-006-ordered-authoritative-widget-model.md) and [ADR-007](adr/ADR-007-version-2-overlay-document-persistence.md) define ordered authoritative content and format-2 persistence. [FDR-005](fdr/FDR-005-singleton-native-settings-window.md) and [ADR-009](adr/ADR-009-secondary-native-settings-viewport-lifecycle.md) define the singleton Settings lifecycle.
+
+These design items are complete; the unchecked requirements below remain the source of truth for implementation completion.
 
 ## Quality Requirements
 
@@ -129,14 +132,27 @@ Zoom/pan controls, widget hiding/locking, and more advanced selection remain def
 - General OBS scene control or LAN/internet exposure
 - Platforms beyond macOS and Linux as release gates
 
+## Contract-to-Issue Verification Matrix
+
+| Accepted contract | Dependent issue | Required implementation evidence |
+|---|---:|---|
+| Ordered model, format-2 persistence, and live complete-snapshot output | #22 | Ordered identity mutations, non-destructive format rejection, round trips, revision initialization, route stability, and connected-output updates |
+| Workspace layout, stable-ID selection, ordering, drag bounds, and appearance | #23 | Pointer/list selection including overlap and deletion fallback, panel sizing at 1024×640 and 1280×800, and visual-state review |
+| Workspace history, keyboard focus, dirty baseline, save failure, and editor close | #24 | Named history/save scenarios, 100-action capacity, grouping, redo invalidation, text-focus shortcut suppression, and Save/Discard/Cancel |
+| Singleton native Settings window | #25 | Reuse/focus, discard-on-close, independent save boundaries, next-launch port behavior, and macOS/Linux native lifecycle checks |
+| Exact bundled fonts, coverage, replacement, and licenses | #26 | Pinned-byte lengths and SHA-256, cmap/U+FFFD checks, complete SIL OFL 1.1 notices, decoded data-URL equality, and native/browser rendering |
+| Combined OBS/platform and representative-resource verification | #27 | macOS/Linux OBS composition, stable URLs, transparent stacking/live updates, Settings failures, font behavior, and history memory measurement |
+
+The Python documentation tests validate that these accepted contracts and assignments are present; they do not exercise future runtime features.
+
 ## Implementation Sequence
 
-1. Record the changed feature/model contracts and settle the dependent design details.
-2. Establish ordered widget state, mutation behavior, and saved-format handling.
-3. Build the workspace panels and shared selection behavior.
-4. Complete widget editing, layer actions, and agreed recovery/keyboard behavior.
-5. Move Settings into a native window and apply the visual clarity pass.
-6. Complete bundled fonts, combined verification, and documentation.
+1. Record the changed feature/model contracts and settle the dependent design details. **Complete on 2026-09-17; implementation remains pending.**
+2. Establish ordered widget state, mutation behavior, and saved-format handling (#22).
+3. Build the workspace panels and shared selection behavior (#23).
+4. Complete widget editing, layer actions, and agreed recovery/keyboard behavior (#24).
+5. Move Settings into a native window (#25).
+6. Integrate bundled fonts (#26), then complete combined platform/OBS verification and documentation (#27).
 
 ## Completion Gate
 
