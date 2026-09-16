@@ -501,6 +501,220 @@ class ArchitectureFoundationContractTests(unittest.TestCase):
                 self.assertTrue(any(clause in error for error in errors), errors)
 
 
+DECISION_002_PATHS = {
+    "ADR-006": ROOT / "docs/adr/ADR-006-ordered-authoritative-widget-model.md",
+    "ADR-007": ROOT / "docs/adr/ADR-007-version-2-overlay-document-persistence.md",
+    "ADR-008": ROOT / "docs/adr/ADR-008-coordinator-owned-workspace-history.md",
+    "ADR-009": ROOT / "docs/adr/ADR-009-secondary-native-settings-viewport-lifecycle.md",
+    "FDR-003": ROOT / "docs/fdr/FDR-003-multi-widget-composition-workspace.md",
+    "FDR-004": ROOT / "docs/fdr/FDR-004-bundled-offline-text-fonts.md",
+    "FDR-005": ROOT / "docs/fdr/FDR-005-singleton-native-settings-window.md",
+}
+
+DECISION_002_MANIFEST = {
+    "ADR-006": [
+        "**Supersedes:** ADR-002",
+        "`adr006_framework_independence`",
+        "`adr006_mutation_ownership`",
+        "`adr006_uuid_semantics`",
+        "`adr006_revision_not_identity`",
+        "`adr006_ordering`",
+        "`adr006_font_delivery`",
+        "`GET /overlay/{id}` and `GET /overlay/{id}/events`",
+    ],
+    "ADR-007": [
+        "**Supersedes:** ADR-003",
+        "`adr007_format_2`",
+        "`adr007_path_contract`",
+        "`adr007_non_destructive_load`",
+        "`adr007_snapshot_io`",
+        "`adr007_replacement`",
+        "`adr007_transient_omission`",
+        "`adr007_settings_unchanged`",
+    ],
+    "ADR-008": [
+        "at most 100 completed actions total across undo and redo",
+        "whole-collection snapshots",
+        "revision high-water marks",
+        "bounded by action count, not memory bytes",
+    ],
+    "ADR-009": [
+        "one singleton secondary native viewport",
+        "same eframe/egui application and GUI event loop",
+        "gracefully stops the server, joins the server thread",
+    ],
+    "FDR-003": [
+        "**Supersedes:** FDR-001",
+        "initial size 1280×800 logical pixels",
+        "minimum size 1024×640",
+        "Initial left/right widths are 220/280 logical pixels with minima 180/260",
+        "Primary+Shift+Z",
+    ],
+    "FDR-004": [
+        "`noto-sans` and `jetbrains-mono`",
+        "U+0020–U+007E and U+00A0–U+00FF",
+        "visibly rendered U+FFFD",
+        "Coverage is a requirement, not a completed font audit.",
+    ],
+    "FDR-005": [
+        "supplements rather than supersedes FDR-002",
+        "discards unsaved form edits without another prompt",
+        "next launch only",
+    ],
+}
+
+
+def _check_002_manifest(documents):
+    errors = []
+    if set(documents) != set(DECISION_002_MANIFEST):
+        errors.append("decision document and manifest sets differ")
+    for identifier, anchors in DECISION_002_MANIFEST.items():
+        text = documents.get(identifier, "")
+        for anchor in anchors:
+            if text.count(anchor) != 1:
+                errors.append(f"{identifier}: expected one material anchor: {anchor}")
+    return errors
+
+
+class Milestone002DecisionContractTests(unittest.TestCase):
+    def _documents(self):
+        return {identifier: path.read_text(encoding="utf-8") for identifier, path in DECISION_002_PATHS.items()}
+
+    def test_002_decision_record_set(self):
+        documents = self._documents()
+        self.assertEqual(_check_002_manifest(documents), [])
+        for identifier, text in documents.items():
+            self.assertIn("**Status:** Accepted", text, identifier)
+            self.assertIn("**Date:** 2026-09-17", text, identifier)
+        for identifier, anchors in DECISION_002_MANIFEST.items():
+            for anchor in anchors:
+                with self.subTest(identifier=identifier, anchor=anchor):
+                    mutated = dict(documents)
+                    mutated[identifier] = documents[identifier].replace(anchor, "", 1)
+                    self.assertTrue(_check_002_manifest(mutated))
+        adr_index = (ROOT / "docs/adr/INDEX.md").read_text(encoding="utf-8")
+        fdr_index = (ROOT / "docs/fdr/INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("[Superseded by ADR-006](ADR-006-ordered-authoritative-widget-model.md)", adr_index)
+        self.assertIn("[Superseded by ADR-007](ADR-007-version-2-overlay-document-persistence.md)", adr_index)
+        self.assertIn("[Superseded by FDR-003](FDR-003-multi-widget-composition-workspace.md)", fdr_index)
+        for unchanged in ("ADR-001", "ADR-004", "ADR-005"):
+            self.assertRegex(adr_index, rf"(?m)^\| \[{unchanged}\].*\| Accepted \|")
+        self.assertRegex(fdr_index, r"(?m)^\| \[FDR-002\].*\| Accepted \|")
+
+    def test_002_history_persistence_contracts(self):
+        fdr = self._documents()["FDR-003"]
+        history = self._documents()["ADR-008"]
+        persistence = self._documents()["ADR-007"]
+        combined = "\n".join((fdr, history, persistence))
+        for scenario in (
+            "cross_overlay_undo",
+            "absent_overlay_selection",
+            "absent_widget_selection",
+            "undo_overlay_delete",
+            "redo_overlay_delete",
+            "save_edit_undo_clean",
+            "failed_save_preserves_state",
+            "pending_text_then_undo",
+            "pending_text_then_save",
+            "redo_invalidation",
+            "restart_revision_initialization",
+        ):
+            self.assertIn(f"`{scenario}`", combined, scenario)
+        for outcome in (
+            "recorded index, otherwise the last overlay, otherwise none",
+            "recorded index, otherwise the last widget, otherwise none",
+            "at most 100 completed actions total across undo and redo",
+            "new document-changing action after undo invalidates redo",
+            "persistent document-content equality",
+            "initial publication may use 0",
+            "accepted edit publishes revision 1",
+            "fresh revision 2",
+            "settings remain a separate format-1",
+            "no format-1 conversion",
+        ):
+            self.assertIn(outcome.lower(), combined.lower(), outcome)
+
+    def test_002_workspace_settings_contracts(self):
+        workspace = self._documents()["FDR-003"]
+        settings = self._documents()["FDR-005"] + self._documents()["ADR-009"]
+        for anchor in (
+            "Index 0 and the top list row are frontmost",
+            "Dragging preserves the initial grab offset",
+            "Primary+S",
+            "Primary+Z",
+            "Primary+Shift+Z",
+            "Primary+D",
+            "Delete/Backspace outside text entry only",
+            "1280×800",
+            "1024×640",
+            "8-point base spacing",
+            "12-point panel padding",
+            "14-point body text",
+            "cyan selection outline",
+            "`overlap_selection`",
+            "`selected_widget_deletion`",
+        ):
+            self.assertIn(anchor, workspace, anchor)
+        for anchor in (
+            "`settings_reopen`",
+            "`settings_close_unsaved`",
+            "discard",
+            "next launch",
+            "does not live-rebind",
+            "format-1",
+            "main workspace",
+            "macOS and Linux",
+        ):
+            self.assertIn(anchor, settings, anchor)
+
+    def test_002_font_contract(self):
+        font = self._documents()["FDR-004"]
+        model = self._documents()["ADR-006"]
+        expected = (
+            "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+            "hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+            "569208",
+            "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+            "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/LICENSE",
+            "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+            "fonts/ttf/JetBrainsMono-Regular.ttf",
+            "273900",
+            "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/fonts/ttf/JetBrainsMono-Regular.ttf",
+            "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/OFL.txt",
+            "SIL Open Font License 1.1",
+            "U+0020–U+007E and U+00A0–U+00FF",
+            "U+FFFD",
+            "Coverage is a requirement, not a completed font audit.",
+        )
+        for anchor in expected:
+            self.assertIn(anchor, font, anchor)
+        self.assertIn("base64 data URLs", model)
+        self.assertIn("`GET /overlay/{id}` and `GET /overlay/{id}/events`", model)
+        self.assertIn("no HTTP routes", model)
+        self.assertIn("#26", font)
+        self.assertNotIn("SHA-256 values are", font)
+
+    def test_002_milestone_contract_links(self):
+        milestone = (ROOT / "docs/TODO-0-0-2.md").read_text(encoding="utf-8")
+        self.assertIn("**Status:** Planned — implementation pending", milestone)
+        for path in (
+            "fdr/FDR-003-multi-widget-composition-workspace.md",
+            "fdr/FDR-004-bundled-offline-text-fonts.md",
+            "fdr/FDR-005-singleton-native-settings-window.md",
+            "adr/ADR-006-ordered-authoritative-widget-model.md",
+            "adr/ADR-007-version-2-overlay-document-persistence.md",
+            "adr/ADR-008-coordinator-owned-workspace-history.md",
+            "adr/ADR-009-secondary-native-settings-viewport-lifecycle.md",
+        ):
+            self.assertIn(path, milestone, path)
+        for issue in range(22, 28):
+            self.assertIn(f"| #{issue} |", milestone, issue)
+        product_section = milestone[milestone.index("## Product Requirements"):milestone.index("## Confirmed Scope")]
+        quality_section = milestone[milestone.index("## Quality Requirements"):milestone.index("## Explicitly Out of Scope")]
+        self.assertNotRegex(product_section + quality_section, r"(?m)^- \[[xX]\]")
+        self.assertIn("do not exercise future runtime features", milestone)
+
+
 class CollaborationArtifactContractTests(unittest.TestCase):
     def _skill(self, name):
         return (ROOT / ".agents" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
