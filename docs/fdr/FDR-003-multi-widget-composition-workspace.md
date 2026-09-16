@@ -14,7 +14,7 @@ The 0.0.2 workspace lets streamers compose a fixed-canvas overlay from multiple 
 - Each overlay contains zero or more independently identified text widgets with editable names, multiline content, position, size, RGBA color, alignment, and bundled font family.
 - A left widget list, aspect-preserving fit-to-window center canvas, and right inspector share one widget selection. With no widget selected, the inspector shows overlay information and canvas dimensions.
 - Compact overlay lifecycle controls, status/errors, and readiness-gated Copy URL/Open output remain available. The transparent browser output remains final rendering authority and receives supported edits without manual refresh.
-- Failures remain visible and non-destructive. macOS and Linux remain the milestone platform gates.
+- Failures remain visible and non-destructive. Users can recover, retry, or continue with an unaffected overlay where possible. macOS and Linux remain the milestone platform gates.
 
 ## Feature Decisions
 
@@ -154,7 +154,7 @@ The 0.0.2 workspace lets streamers compose a fixed-canvas overlay from multiple 
 - Fixed explicit canvases and authoritative transparent browser output remain.
 - Text content, position, font size, color, and alignment remain editable.
 - Exact browser output can still be copied/opened when ready, and supported edits update connected output without manual refresh.
-- Visible, non-destructive persistence and server failures remain.
+- Visible, non-destructive persistence and server failures remain; users can recover, retry, or continue with an unaffected overlay where possible.
 - macOS and Linux remain required targets; accounts, cloud, collaboration, synchronization, integrations, general OBS control, and LAN/internet exposure remain excluded.
 
 ### Changed
