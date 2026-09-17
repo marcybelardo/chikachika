@@ -10,12 +10,20 @@ use std::net::SocketAddr;
 use crate::model::{
     CanvasSize, ModelError, Overlay, OverlayId, TextWidget, TextWidgetId, validate_collection,
 };
+#[cfg(test)]
+use crate::persistence::SaveFailureStage;
 use crate::persistence::{PersistenceError, Store};
 use crate::server::{HubError, OverlayHub, PublishResult, ServerError};
 
 pub use crate::settings::SettingsState;
 
 /// The narrow hosting boundary consumed by the coordinator and test doubles.
+///
+/// A successful `publish_overlay` is authoritative: it has committed the
+/// candidate to the hub, and the coordinator must commit its workspace from
+/// that result without a fallible post-publication read. `snapshot_overlay` is
+/// therefore a preflight consistency check only for coordinator mutations; a
+/// snapshot failure or mismatch before publication rejects the candidate.
 pub trait HubOperations: Clone {
     fn register_overlay(&self, overlay: Overlay) -> Result<(), HubError>;
     fn publish_overlay(&self, overlay: &Overlay) -> Result<PublishResult, HubError>;
@@ -478,15 +486,18 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
             .then_some(self.selected_widget)
             .flatten();
         let selected_index = selected_id.and_then(|widget_id| current.widget_index(widget_id));
+        // Verify the coordinator still describes the hub before publishing. A
+        // successful publication is authoritative, so this is intentionally
+        // the last fallible hub operation in the mutation transaction.
+        match self.hub.snapshot_overlay(id) {
+            Ok(Some(snapshot)) if snapshot == current => {}
+            Ok(_) => {
+                return Err(self.reject(CoordinatorError::HubWorkspaceDivergence { id }));
+            }
+            Err(error) => return Err(self.reject(CoordinatorError::Hub(error))),
+        }
         match self.hub.publish_overlay(&updated) {
             Ok(PublishResult::Published { .. }) | Ok(PublishResult::Unchanged) => {
-                match self.hub.snapshot_overlay(id) {
-                    Ok(Some(snapshot)) if snapshot == updated => {}
-                    Ok(_) => {
-                        return Err(self.reject(CoordinatorError::HubWorkspaceDivergence { id }));
-                    }
-                    Err(error) => return Err(self.reject(CoordinatorError::Hub(error))),
-                }
                 self.overlays[index] = updated;
                 if self.selected == Some(id) {
                     self.selected_widget =
@@ -615,6 +626,18 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         self.operation_error = None;
         Ok(())
     }
+
+    #[cfg(test)]
+    fn save_with_failure(&mut self, stage: SaveFailureStage) -> Result<(), CoordinatorError> {
+        let snapshot = self.overlays.clone();
+        self.store
+            .save_with_failure(&snapshot, stage)
+            .map_err(|error| self.reject(error.into()))?;
+        self.saved_content = snapshot;
+        self.operation_error = None;
+        Ok(())
+    }
+
     pub fn save_if_dirty(&mut self) -> Result<bool, CoordinatorError> {
         if !self.is_dirty() {
             return Ok(false);
@@ -654,6 +677,7 @@ mod tests {
     use crate::persistence;
     use std::fs;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     fn coordinator(path: &Path) -> HeadlessCoordinator {
         HeadlessCoordinator::bootstrap(Store::at(path)).unwrap()
@@ -663,18 +687,37 @@ mod tests {
     fn widget_selection_lifecycle() {
         let d = tempfile::tempdir().unwrap();
         let mut app = coordinator(&d.path().join("overlays.json"));
-        let overlay = app.create_overlay("Live", 320, 240).unwrap();
+        let first_overlay = app.create_overlay("First", 320, 240).unwrap();
         assert_eq!(app.selected_widget_id(), None);
-        let first = app.add_widget(overlay, "first").unwrap();
-        let second = app.add_widget(overlay, "second").unwrap();
-        assert_eq!(app.selected_widget_id(), Some(second));
+        let first = app.add_widget(first_overlay, "first").unwrap();
+        let second = app.add_widget(first_overlay, "second").unwrap();
+        let second_overlay = app.create_overlay("Second", 320, 240).unwrap();
+        let other = app.add_widget(second_overlay, "other").unwrap();
+        app.select_overlay(first_overlay).unwrap();
         app.select_widget(first).unwrap();
+        let hub = app.hub();
+        let first_revision = hub.revision(first_overlay).unwrap();
+        let mut receiver = hub.subscribe(first_overlay).unwrap();
+        receiver.borrow_and_update();
+
+        // Switching overlays clears a widget selection that belongs to the
+        // previous overlay, without publishing either overlay.
+        app.select_overlay(second_overlay).unwrap();
+        assert_eq!(app.selected_widget_id(), None);
+        assert_eq!(hub.revision(first_overlay).unwrap(), first_revision);
+        assert!(!receiver.has_changed().unwrap());
+
+        app.select_widget(other).unwrap();
+        app.select_overlay(second_overlay).unwrap();
+        assert_eq!(app.selected_widget_id(), Some(other));
+        assert_eq!(hub.revision(second_overlay).unwrap(), Some(1));
+        assert!(!receiver.has_changed().unwrap());
+
+        app.select_overlay(first_overlay).unwrap();
+        assert_eq!(app.selected_widget_id(), None);
         app.select_widget(first).unwrap();
-        app.select_widget(second).unwrap();
-        app.select_overlay(overlay).unwrap();
+        app.delete_widget(first_overlay, first).unwrap();
         assert_eq!(app.selected_widget_id(), Some(second));
-        app.delete_widget(overlay, second).unwrap();
-        assert_eq!(app.selected_widget_id(), Some(first));
     }
 
     #[test]
@@ -835,17 +878,221 @@ mod tests {
     }
 
     #[test]
-    fn save_failure_preserves_content_and_dirty_baseline() {
+    fn failed_save_preserves_previous_file_and_workspace() {
+        for stage in [
+            SaveFailureStage::Write,
+            SaveFailureStage::Sync,
+            SaveFailureStage::Replace,
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let path = d.path().join("overlays.json");
+            let mut app = coordinator(&path);
+            let id = app.create_overlay("Baseline", 100, 100).unwrap();
+            let widget = app.add_widget(id, "baseline").unwrap();
+            app.select_widget(widget).unwrap();
+            app.save().unwrap();
+            let saved_bytes = fs::read(&path).unwrap();
+            assert!(path.is_file());
+            let saved_content = app.saved_content.clone();
+
+            app.update_overlay(id, |overlay| {
+                overlay.set_widget_content(widget, format!("dirty {stage:?}"))
+            })
+            .unwrap();
+            assert!(app.is_dirty());
+            let dirty_content = app
+                .overlay(id)
+                .unwrap()
+                .widget(widget)
+                .unwrap()
+                .content()
+                .to_owned();
+            let selected_overlay = app.selected_overlay_id();
+            let selected_widget = app.selected_widget_id();
+
+            let error = app.save_with_failure(stage).unwrap_err();
+            assert_eq!(fs::read(&path).unwrap(), saved_bytes);
+            assert_eq!(app.overlays().len(), 1);
+            assert_eq!(
+                app.overlay(id).unwrap().widget(widget).unwrap().content(),
+                dirty_content
+            );
+            assert_eq!(app.saved_content, saved_content);
+            assert_eq!(app.selected_overlay_id(), selected_overlay);
+            assert_eq!(app.selected_widget_id(), selected_widget);
+            assert_eq!(app.last_error(), Some(error.to_string().as_str()));
+            assert!(app.is_dirty());
+
+            app.save().unwrap();
+            assert_eq!(persistence::load(&path).unwrap(), app.overlays());
+            assert_eq!(app.saved_content, app.overlays());
+            assert!(!app.is_dirty());
+        }
+    }
+
+    #[test]
+    fn overlay_url_stable_across_format_two_restart() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("overlays.json");
+        let address = SocketAddr::from(([127, 0, 0, 1], 43_211));
         let mut app = coordinator(&path);
-        app.create_overlay("Live", 100, 100).unwrap();
+        app.set_server_address(address);
+        let id = app.create_overlay("Before", 320, 240).unwrap();
+        let widget = app.add_widget(id, "before").unwrap();
+        let initial_url = app.selected_url().unwrap();
+
+        app.update_overlay(id, |overlay| overlay.set_widget_content(widget, "after"))
+            .unwrap();
+        app.rename_overlay(id, "After").unwrap();
         app.save().unwrap();
-        let before = app.overlays().to_vec();
-        app.store = Store::at(d.path().join("directory"));
-        fs::create_dir(app.store.path()).unwrap();
-        assert!(app.save().is_err());
-        assert_eq!(app.overlays(), before);
+        let saved_url = app.selected_url().unwrap();
+        assert_eq!(saved_url, initial_url);
+        assert_eq!(
+            app.overlay(id).unwrap().widget(widget).unwrap().content(),
+            "after"
+        );
+        assert_eq!(app.hub().revision(id).unwrap(), Some(3));
+
+        let mut restarted = coordinator(&path);
+        restarted.set_server_address(address);
+        assert_eq!(restarted.selected_overlay_id(), Some(id));
+        assert_eq!(
+            restarted
+                .overlay(id)
+                .unwrap()
+                .widget(widget)
+                .unwrap()
+                .content(),
+            "after"
+        );
+        assert_eq!(restarted.selected_url(), Some(saved_url));
+        assert_eq!(restarted.hub().revision(id).unwrap(), Some(0));
+    }
+
+    #[derive(Clone)]
+    struct ScriptedHub {
+        state: Arc<Mutex<ScriptedHubState>>,
+    }
+
+    struct ScriptedHubState {
+        overlays: std::collections::HashMap<OverlayId, Overlay>,
+        snapshot_calls: usize,
+        fail_snapshot_after_first: bool,
+        publish_error: Option<HubError>,
+    }
+
+    impl ScriptedHub {
+        fn new(fail_snapshot_after_first: bool) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(ScriptedHubState {
+                    overlays: std::collections::HashMap::new(),
+                    snapshot_calls: 0,
+                    fail_snapshot_after_first,
+                    publish_error: None,
+                })),
+            }
+        }
+
+        fn set_publish_error(&self, error: HubError) {
+            self.state.lock().unwrap().publish_error = Some(error);
+        }
+
+        fn current(&self, id: OverlayId) -> Option<Overlay> {
+            self.state.lock().unwrap().overlays.get(&id).cloned()
+        }
+
+        fn snapshot_calls(&self) -> usize {
+            self.state.lock().unwrap().snapshot_calls
+        }
+    }
+
+    impl HubOperations for ScriptedHub {
+        fn register_overlay(&self, overlay: Overlay) -> Result<(), HubError> {
+            let mut state = self.state.lock().unwrap();
+            if state.overlays.contains_key(&overlay.id()) {
+                return Err(HubError::Duplicate { id: overlay.id() });
+            }
+            state.overlays.insert(overlay.id(), overlay);
+            Ok(())
+        }
+
+        fn publish_overlay(&self, overlay: &Overlay) -> Result<PublishResult, HubError> {
+            let mut state = self.state.lock().unwrap();
+            if let Some(error) = state.publish_error {
+                return Err(error);
+            }
+            let current = state
+                .overlays
+                .get(&overlay.id())
+                .ok_or(HubError::Unknown { id: overlay.id() })?;
+            if current == overlay {
+                return Ok(PublishResult::Unchanged);
+            }
+            state.overlays.insert(overlay.id(), overlay.clone());
+            Ok(PublishResult::Published { revision: 1 })
+        }
+
+        fn remove_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+            Ok(self.state.lock().unwrap().overlays.remove(&id))
+        }
+
+        fn snapshot_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
+            let mut state = self.state.lock().unwrap();
+            state.snapshot_calls += 1;
+            if state.fail_snapshot_after_first && state.snapshot_calls > 1 {
+                return Err(HubError::LockPoisoned);
+            }
+            Ok(state.overlays.get(&id).cloned())
+        }
+    }
+
+    #[test]
+    fn published_update_commits_without_post_publish_read() {
+        let d = tempfile::tempdir().unwrap();
+        let initial = Overlay::with_dimensions("Before", 100, 100).unwrap();
+        let id = initial.id();
+        let hub = ScriptedHub::new(true);
+        let mut app = HeadlessCoordinator::from_overlays_with_hub(
+            Store::at(d.path().join("overlays.json")),
+            vec![initial.clone()],
+            hub.clone(),
+        )
+        .unwrap();
+
+        app.rename_overlay(id, "After").unwrap();
+        assert_eq!(app.overlay(id).unwrap().name(), "After");
+        assert_eq!(hub.current(id).unwrap().name(), "After");
+        assert_eq!(hub.snapshot_calls(), 1);
+        assert_eq!(app.last_error(), None);
+    }
+
+    #[test]
+    fn publish_error_preserves_workspace_selection_and_baseline() {
+        let d = tempfile::tempdir().unwrap();
+        let mut initial = Overlay::with_dimensions("Before", 100, 100).unwrap();
+        let widget = initial.add_widget("content").unwrap();
+        let id = initial.id();
+        let hub = ScriptedHub::new(false);
+        let mut app = HeadlessCoordinator::from_overlays_with_hub(
+            Store::at(d.path().join("overlays.json")),
+            vec![initial.clone()],
+            hub.clone(),
+        )
+        .unwrap();
+        app.select_widget(widget).unwrap();
+        app.save().unwrap();
+        let workspace = app.overlays().to_vec();
+        let baseline = app.saved_content.clone();
+        hub.set_publish_error(HubError::RevisionExhausted { id, current: 1 });
+
+        assert!(app.rename_overlay(id, "Rejected").is_err());
+        assert_eq!(app.overlays(), workspace);
+        assert_eq!(app.saved_content, baseline);
+        assert_eq!(app.selected_overlay_id(), Some(id));
+        assert_eq!(app.selected_widget_id(), Some(widget));
+        assert_eq!(hub.current(id), Some(initial));
+        assert_eq!(hub.snapshot_calls(), 1);
+        assert!(app.last_error().is_some());
         assert!(!app.is_dirty());
     }
 
