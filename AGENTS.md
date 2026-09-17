@@ -2,7 +2,7 @@
 
 This file is the root context and navigation entry point for contributors and coding agents. More specific `AGENTS.md` files may be added later; when present, they govern their directory subtree and must be listed here.
 
-> **Status:** The `0.0.1` vertical-slice milestone is complete; release publication remains pending.
+> **Status:** The `0.0.1` vertical-slice milestone is complete; the issue22 ordered-widget/format-2 checkpoint is implemented in the current source branch, while release publication and the remaining `0.0.2` work are pending.
 
 ## Context Map
 
@@ -44,7 +44,7 @@ This file is the root context and navigation entry point for contributors and co
 
 ## Project Status
 
-The `0.0.1` vertical-slice milestone is complete. The repository contains the native overlay workspace and one-widget editor, versioned app-local persistence, a transparent browser renderer, stable loopback HTTP/SSE hosting, completed macOS/Linux OBS workflow validation, user-facing setup and troubleshooting guides, and representative idle resource measurements. Release publication has not yet been recorded; completed requirements and evidence are tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
+The `0.0.1` vertical-slice milestone is complete. The current source branch also contains the issue22 ordered multi-widget model, coordinator selection/baseline behavior, format-2 overlay persistence, native editor controls, and complete browser `widgets`-array ID reconciliation. Release publication has not yet been recorded, and the remaining `0.0.2` work is tracked in [`docs/TODO-0-0-2.md`](docs/TODO-0-0-2.md). Completed `0.0.1` requirements and evidence remain tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
 
 Until `0.0.1` is released, the architecture and implementation may change substantially. There are no compatibility or migration guarantees for unreleased code or data. Agents should change, replace, or remove existing code and structure when doing so produces a simpler, clearer, more functional product. Preserve an earlier approach only when it remains the best current choice, not merely because it already exists.
 

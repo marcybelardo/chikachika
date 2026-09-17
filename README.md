@@ -2,23 +2,29 @@
 
 Chikachika is a local-first desktop editor for creating stream overlays. Build
 an overlay in the native workspace, copy its stable browser-source URL, and use
-it in OBS. Changes appear in the browser output while you edit.
+it in OBS. The project is pre-release and currently runs from source on macOS
+and Linux.
 
-The project is pre-release and currently runs from source on macOS and Linux.
+## Current issue22 checkpoint
 
-## What it does
+The current source checkpoint has an ordered collection of zero or more text
+widgets per overlay. The native editor can add, name, edit, duplicate, delete,
+and move widgets forward or backward; widget IDs remain stable across those
+operations. The model keeps index 0 frontmost, while the native preview paints
+back-to-front. A selected widget is owned by the application coordinator, not
+by the GUI.
 
-- Creates, names, edits, saves, and restores local overlays.
-- Provides a fixed-canvas editor for a text widget, including content, size,
-  color, alignment, and position.
-- Serves each overlay at a stable, transparent browser-source URL on the local
-  computer.
-- Publishes edits live without requiring an OBS source refresh.
-- Keeps overlay documents and application settings local.
+Overlay documents use format 2 in `overlays.json`. Format 2 stores the complete
+ordered collection and durable widget properties, but not selection, delivery
+revisions, or history. There is no format-1 overlay migration: an incompatible
+source blocks startup and is never silently replaced. Server settings remain a
+separate format-1 `settings.json` file.
 
-The current editor supports one optional text widget per overlay. The planned
-[`0.0.2` milestone](docs/TODO-0-0-2.md) expands this into a multi-widget
-composition workspace.
+This checkpoint does not make the 0.0.2 milestone complete. The broader
+workspace layout and overlap behavior (#23), history and close recovery (#24),
+the native Settings window (#25), bundled font assets and fidelity (#26), and
+macOS/Linux OBS validation (#27) remain incomplete. Font IDs are persisted and
+shown by the editor, but no font files are bundled yet.
 
 ## Run from source
 
@@ -40,11 +46,17 @@ platform prerequisites and saved-data locations.
 
 1. Create or select an overlay and save it.
 2. Wait for the local server to report that it is ready.
-3. Copy the selected overlay's URL.
+3. Copy the selected overlay's exact URL.
 4. Add that URL to OBS as a Browser Source.
 
-See the [user guide](docs/user/README.md) for the complete overlay workflow,
-OBS setup, port settings, and troubleshooting.
+The browser output is transparent and is the final rendering authority. The
+browser checkpoint consumes complete `widgets`-array snapshots, validates the
+whole snapshot before mutation, reconciles DOM nodes by stable widget ID, and
+keeps reverse DOM order so model index 0 paints frontmost. `Number.MAX_SAFE_INTEGER`
+is the largest accepted browser delivery revision.
+
+See the [user guide](docs/user/README.md) for the overlay workflow, OBS setup,
+path locations, backup recovery, port settings, and troubleshooting.
 
 ## Development
 
@@ -69,5 +81,5 @@ to Rust. CI runs the Rust checks on Ubuntu and macOS.
 - [Feature decisions](docs/fdr/INDEX.md)
 - [Canonical terminology](docs/GLOSSARY.md)
 - [`0.0.1` milestone evidence](docs/TODO-0-0-1.md)
-- [`0.0.2` milestone plan](docs/TODO-0-0-2.md)
+- [`0.0.2` milestone and issue22 checkpoint](docs/TODO-0-0-2.md)
 - [Release process](docs/RELEASING.md)
