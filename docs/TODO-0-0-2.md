@@ -145,7 +145,7 @@ These design items are complete as decisions; the unchecked requirements below r
 ## Quality Requirements
 
 - [x] Tests cover widget identity, ordered mutations, selection validity, persistence round trips, and non-destructive rejection of unsupported saved formats.
-- [ ] Tests cover browser projection and live changes for multiple widgets, including reorder and removal.
+- [x] Tests cover browser projection and live changes for multiple widgets, including reorder and removal.
 - [ ] Undo/redo tests cover grouped edits, deletion restoration, redo invalidation, and dirty state around saving; close-flow checks cover Save, Discard, Cancel, and save failure.
 - [ ] Exercise real pointer and keyboard selection workflows, including obscured widgets and text-field focus.
 - [ ] Measure representative idle resource use and responsiveness with a documented multi-widget workload; investigate material regressions against the [0.0.1 measurement](measurements/0.0.1-idle-resource-usage.md).

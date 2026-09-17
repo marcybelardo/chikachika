@@ -881,6 +881,16 @@ class Milestone002DecisionContractTests(unittest.TestCase):
         self.assertIn("they do not exercise runtime features", milestone)
 
 
+ISSUE22_TEST_SOURCE_MANIFEST = {
+    "src/model.rs": ("ordered_widget_mutations",),
+    "src/app.rs": ("widget_selection_lifecycle", "blocked_bootstrap_preserves_incompatible_store"),
+    "src/persistence.rs": ("format_two_round_trip_and_transient_omission", "format_one_rejected_non_destructively"),
+    "src/server.rs": ("hub_session_revision_lifecycle",),
+    "src/browser.rs": ("browser_multi_widget_projection_and_html",),
+    "src/gui.rs": ("multi_widget_editor_scenario", "multi_widget_preview_paint_order"),
+}
+
+
 class Issue22DocumentationCheckpointTests(unittest.TestCase):
     """Keep the living issue22 checkpoint claims tied to named evidence."""
 
@@ -975,18 +985,12 @@ class Issue22DocumentationCheckpointTests(unittest.TestCase):
     def test_issue22_documentation_checkpoint_names_evidence(self):
         milestone = self._read("docs/TODO-0-0-2.md")
         architecture = self._read("docs/architecture/INDEX.md")
-        for test_name in (
-            "ordered_widget_mutations",
-            "widget_selection_lifecycle",
-            "format_two_round_trip_and_transient_omission",
-            "format_one_rejected_non_destructively",
-            "blocked_bootstrap_preserves_incompatible_store",
-            "hub_session_revision_lifecycle",
-            "browser_multi_widget_projection_and_html",
-            "multi_widget_editor_scenario",
-            "multi_widget_preview_paint_order",
-        ):
-            self.assertIn(test_name, milestone + architecture, test_name)
+        documentation = milestone + architecture
+        for source, test_names in ISSUE22_TEST_SOURCE_MANIFEST.items():
+            source_text = self._read(source)
+            for test_name in test_names:
+                self.assertIn(test_name, documentation, test_name)
+                self.assertRegex(source_text, rf"(?m)^\s*fn {test_name}\s*\(", f"{source}: {test_name}")
         self.assertIn("issue22_documentation_checkpoint", milestone + self._read("README.md"))
 
 
