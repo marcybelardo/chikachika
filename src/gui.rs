@@ -5,10 +5,13 @@
 //! persistence status, and URL readiness all remain in
 //! [`crate::app::HeadlessCoordinator`].
 
+#[cfg(test)]
+use std::collections::HashMap;
+
 use eframe::egui;
 
 use crate::app::{ApplicationBootstrap, BootstrapOutcome, HeadlessCoordinator};
-use crate::model::{Alignment, Color, OverlayId, Position, TextWidget, TextWidgetId};
+use crate::model::{Alignment, Color, FontFamily, OverlayId, Position, TextWidget, TextWidgetId};
 use crate::settings::{MAX_PORT, MIN_PORT, Settings, SettingsState, Store as SettingsStore};
 
 #[derive(Default)]
@@ -23,9 +26,19 @@ struct TransientState {
     delete_target: Option<OverlayId>,
     dialog_error: Option<String>,
     preview_drag: Option<PreviewDrag>,
+    /// The target that owns the inspector's transient state. Keeping this
+    /// separate from the coordinator makes it possible to discard stale UI
+    /// state immediately when a selection or overlay changes.
+    inspector_target: Option<(OverlayId, TextWidgetId)>,
     settings_port_input: String,
     settings_save_error: Option<String>,
     settings_save_succeeded: bool,
+    #[cfg(test)]
+    widget_selector_rects: HashMap<TextWidgetId, egui::Rect>,
+    #[cfg(test)]
+    control_rects: HashMap<String, egui::Rect>,
+    #[cfg(test)]
+    preview_rect: Option<egui::Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -234,8 +247,16 @@ impl ChikachikaApp {
             "Confirm delete" => self.confirm_delete(),
             "Save" => self.save_workspace(),
             "Save port for next launch" | "Save port" => self.save_settings_port(),
-            "Add text widget" => add_selected_text_widget(self.coordinator.as_mut()),
-            "Remove text widget" => remove_selected_text_widget(self.coordinator.as_mut()),
+            "Add text widget" | "Add" => {
+                add_selected_text_widget(self.coordinator.as_mut()).map(|_| ())
+            }
+            "Remove text widget" | "Delete widget" => {
+                remove_selected_text_widget(self.coordinator.as_mut())
+            }
+            "Duplicate" => duplicate_selected_text_widget(self.coordinator.as_mut()).map(|_| ()),
+
+            "Forward" => move_selected_text_widget(self.coordinator.as_mut(), true),
+            "Backward" => move_selected_text_widget(self.coordinator.as_mut(), false),
             other => self.select_named(other),
         }
     }
@@ -246,6 +267,14 @@ impl ChikachikaApp {
             .as_mut()
             .expect("usable state has a coordinator");
         let transient = &mut self.transient;
+
+        let target = coordinator
+            .selected_overlay_id()
+            .zip(coordinator.selected_widget_id());
+        if transient.inspector_target != target {
+            clear_inspector_state(transient);
+            transient.inspector_target = target;
+        }
 
         egui::TopBottomPanel::top("status").show(context, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -299,6 +328,8 @@ impl ChikachikaApp {
                         };
                         if ui.selectable_label(is_selected, label).clicked() {
                             let _ = select_overlay(coordinator, id);
+                            clear_inspector_state(transient);
+                            transient.inspector_target = None;
                         }
                     }
                 }
@@ -310,20 +341,17 @@ impl ChikachikaApp {
                 ui.separator();
                 let Some(overlay) = coordinator.selected_overlay() else {
                     transient.preview_drag = None;
-                    ui.label(
-                        "Select an overlay or use Create overlay to make your first workspace.",
-                    );
+                    transient.inspector_target = None;
+                    ui.label("Select an overlay or use Create overlay to make your first workspace.");
                     return;
                 };
 
                 let id = overlay.id();
                 let name = overlay.name().to_owned();
                 let canvas = overlay.canvas();
-                let revision = overlay.revision();
                 ui.label(format!("Name: {name}"));
                 ui.label(format!("Canvas: {} × {}", canvas.width(), canvas.height()));
                 ui.label(format!("Stable identity: {id}"));
-                ui.label(format!("Hosted revision: {revision}"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Rename").clicked() {
@@ -334,7 +362,13 @@ impl ChikachikaApp {
                     }
                 });
                 ui.add_space(8.0);
-                render_text_editor(ui, coordinator, transient, id);
+
+                render_widget_selector(ui, coordinator, transient, id);
+                ui.add_space(8.0);
+                render_selected_widget_inspector(ui, coordinator, transient, id);
+                ui.add_space(8.0);
+                ui.label("Canvas preview — drag the selected widget to move it");
+                render_collection_preview(ui, coordinator, transient, id);
                 ui.add_space(8.0);
                 ui.label("Browser-source URL");
                 if let Some(url) = coordinator.selected_url() {
@@ -348,9 +382,7 @@ impl ChikachikaApp {
                         }
                     });
                 } else {
-                    ui.label(
-                    "Unavailable until the local server successfully binds and reports readiness.",
-                );
+                    ui.label("Unavailable until the local server successfully binds and reports readiness.");
                 }
             });
         });
@@ -378,7 +410,9 @@ impl eframe::App for ChikachikaApp {
 #[derive(Clone, Debug, PartialEq)]
 struct TextEditorValues {
     id: TextWidgetId,
+    name: String,
     content: String,
+    font_family: FontFamily,
     position: Position,
     font_size: f32,
     color: Color,
@@ -389,7 +423,9 @@ impl TextEditorValues {
     fn from_widget(widget: &TextWidget) -> Self {
         Self {
             id: widget.id(),
+            name: widget.name().to_owned(),
             content: widget.content().to_owned(),
+            font_family: widget.font_family(),
             position: widget.position(),
             font_size: widget.font_size(),
             color: widget.color(),
@@ -398,54 +434,69 @@ impl TextEditorValues {
     }
 }
 
-#[cfg(test)]
-fn add_selected_text_widget(coordinator: Option<&mut HeadlessCoordinator>) -> Result<(), String> {
-    let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
-    let overlay_id = coordinator
-        .selected_overlay_id()
-        .ok_or_else(|| "no overlay is selected".to_owned())?;
-    add_text_widget(coordinator, overlay_id)
+fn clear_inspector_state(transient: &mut TransientState) {
+    transient.preview_drag = None;
 }
 
-#[cfg(test)]
-fn remove_selected_text_widget(
+fn add_selected_text_widget(
     coordinator: Option<&mut HeadlessCoordinator>,
-) -> Result<(), String> {
+) -> Result<TextWidgetId, String> {
     let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
-    let overlay = coordinator
-        .selected_overlay()
-        .ok_or_else(|| "no overlay is selected".to_owned())?;
-    let overlay_id = overlay.id();
-    let widget_id = overlay
-        .text_widget()
-        .ok_or_else(|| "no text widget exists".to_owned())?
-        .id();
-    remove_text_widget(coordinator, overlay_id, widget_id)
+    coordinator
+        .add_selected_widget(TextWidget::new("Text"))
+        .map_err(|error| error.to_string())
 }
 
 fn add_text_widget(
     coordinator: &mut HeadlessCoordinator,
     overlay_id: OverlayId,
-) -> Result<(), String> {
+) -> Result<TextWidgetId, String> {
     coordinator
-        .update_overlay(overlay_id, |overlay| {
-            overlay.add_text_widget(TextWidget::new("Text"))?;
-            Ok(())
-        })
+        .add_widget(overlay_id, TextWidget::new("Text"))
         .map_err(|error| error.to_string())
 }
 
-fn remove_text_widget(
-    coordinator: &mut HeadlessCoordinator,
-    overlay_id: OverlayId,
-    widget_id: TextWidgetId,
+fn remove_selected_text_widget(
+    coordinator: Option<&mut HeadlessCoordinator>,
 ) -> Result<(), String> {
     coordinator
-        .update_overlay(overlay_id, |overlay| {
-            overlay.remove_text_widget(widget_id)?;
-            Ok(())
-        })
+        .ok_or_else(|| "workspace is not available".to_owned())?
+        .delete_selected_widget()
         .map_err(|error| error.to_string())
+}
+
+fn duplicate_selected_text_widget(
+    coordinator: Option<&mut HeadlessCoordinator>,
+) -> Result<TextWidgetId, String> {
+    let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
+    let overlay_id = coordinator
+        .selected_overlay_id()
+        .ok_or_else(|| "no overlay is selected".to_owned())?;
+    let widget_id = coordinator
+        .selected_widget_id()
+        .ok_or_else(|| "no widget is selected".to_owned())?;
+    coordinator
+        .duplicate_widget(overlay_id, widget_id)
+        .map_err(|error| error.to_string())
+}
+
+fn move_selected_text_widget(
+    coordinator: Option<&mut HeadlessCoordinator>,
+    forward: bool,
+) -> Result<(), String> {
+    let coordinator = coordinator.ok_or_else(|| "workspace is not available".to_owned())?;
+    let overlay_id = coordinator
+        .selected_overlay_id()
+        .ok_or_else(|| "no overlay is selected".to_owned())?;
+    let widget_id = coordinator
+        .selected_widget_id()
+        .ok_or_else(|| "no widget is selected".to_owned())?;
+    let result = if forward {
+        coordinator.move_widget_forward(overlay_id, widget_id)
+    } else {
+        coordinator.move_widget_backward(overlay_id, widget_id)
+    };
+    result.map_err(|error| error.to_string())
 }
 
 fn apply_text_editor_values(
@@ -455,46 +506,143 @@ fn apply_text_editor_values(
 ) -> Result<(), String> {
     coordinator
         .update_overlay(overlay_id, move |overlay| {
-            overlay.set_text_content(values.id, values.content)?;
-            overlay.set_text_position(values.id, values.position)?;
-            overlay.set_text_font_size(values.id, values.font_size)?;
-            overlay.set_text_color(values.id, values.color)?;
-            overlay.set_text_alignment(values.id, values.alignment)
+            overlay.rename_widget(values.id, values.name)?;
+            overlay.set_widget_content(values.id, values.content)?;
+            overlay.set_widget_font_family(values.id, values.font_family)?;
+            overlay.set_widget_position(values.id, values.position)?;
+            overlay.set_widget_font_size(values.id, values.font_size)?;
+            overlay.set_widget_color(values.id, values.color)?;
+            overlay.set_widget_alignment(values.id, values.alignment)
         })
         .map_err(|error| error.to_string())
 }
 
-fn render_text_editor(
+fn render_widget_selector(
     ui: &mut egui::Ui,
     coordinator: &mut HeadlessCoordinator,
     transient: &mut TransientState,
     overlay_id: OverlayId,
 ) {
-    ui.heading("Text widget");
+    ui.horizontal(|ui| {
+        ui.heading("Widget selector");
+        let response = ui.button("Add text widget");
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Add text widget".to_owned(), response.rect);
+        if response.clicked() {
+            if add_text_widget(coordinator, overlay_id).is_ok() {
+                clear_inspector_state(transient);
+                transient.inspector_target = coordinator
+                    .selected_overlay_id()
+                    .zip(coordinator.selected_widget_id());
+            }
+        }
+    });
+    ui.label("Frontmost first");
+    let selected_widget = coordinator.selected_widget_id();
+    let rows: Vec<(TextWidgetId, String)> = coordinator
+        .overlay(overlay_id)
+        .map(|overlay| {
+            overlay
+                .widgets()
+                .iter()
+                .map(|widget| (widget.id(), widget.name().to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (widget_id, name) in rows {
+        ui.push_id(("widget-row", overlay_id, widget_id), |ui| {
+            let response = ui.selectable_label(selected_widget == Some(widget_id), name);
+            #[cfg(test)]
+            transient
+                .widget_selector_rects
+                .insert(widget_id, response.rect);
+            if response.clicked() {
+                if coordinator.select_widget(widget_id).is_ok() {
+                    clear_inspector_state(transient);
+                    transient.inspector_target = Some((overlay_id, widget_id));
+                }
+            }
+        });
+    }
+}
+
+fn render_selected_widget_inspector(
+    ui: &mut egui::Ui,
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+    overlay_id: OverlayId,
+) {
     let Some(overlay) = coordinator.overlay(overlay_id) else {
-        transient.preview_drag = None;
+        clear_inspector_state(transient);
         return;
     };
     let canvas = overlay.canvas();
-    let Some(widget) = overlay.text_widget() else {
-        transient.preview_drag = None;
-        ui.label("This overlay has no text widget.");
-        if ui.button("Add text widget").clicked() {
-            let _ = add_text_widget(coordinator, overlay_id);
-        }
+    let Some(widget) = coordinator.selected_widget().cloned() else {
+        clear_inspector_state(transient);
+        ui.heading("Overlay information");
+        ui.label("No widget selected.");
+        ui.label(format!("Canvas: {} × {}", canvas.width(), canvas.height()));
+        ui.label("Select a widget from the frontmost-first list to edit it.");
         return;
     };
-    let mut values = TextEditorValues::from_widget(widget);
-    let original = values.clone();
-    if !drag_matches(transient.preview_drag, overlay_id, values.id) {
-        transient.preview_drag = None;
-    }
 
-    if ui.button("Remove text widget").clicked() {
-        let _ = remove_text_widget(coordinator, overlay_id, values.id);
+    let mut values = TextEditorValues::from_widget(&widget);
+    let original = values.clone();
+    ui.heading("Widget inspector");
+    ui.label(format!("Stable widget identity: {}", values.id));
+    let mut command_changed_selection = false;
+    ui.horizontal(|ui| {
+        let duplicate = ui.button("Duplicate");
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Duplicate".to_owned(), duplicate.rect);
+        if duplicate.clicked() {
+            let _ = duplicate_selected_text_widget(Some(coordinator));
+            command_changed_selection = true;
+        }
+        let delete = ui.button("Delete widget");
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Delete widget".to_owned(), delete.rect);
+        if delete.clicked() {
+            let _ = remove_selected_text_widget(Some(coordinator));
+            command_changed_selection = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        let forward = ui.button("Forward");
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Forward".to_owned(), forward.rect);
+        if forward.clicked() {
+            let _ = move_selected_text_widget(Some(coordinator), true);
+            command_changed_selection = true;
+        }
+        let backward = ui.button("Backward");
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Backward".to_owned(), backward.rect);
+        if backward.clicked() {
+            let _ = move_selected_text_widget(Some(coordinator), false);
+            command_changed_selection = true;
+        }
+    });
+    if command_changed_selection {
+        clear_inspector_state(transient);
+        transient.inspector_target = coordinator
+            .selected_overlay_id()
+            .zip(coordinator.selected_widget_id());
         return;
     }
 
+    ui.label("Name");
+    ui.text_edit_singleline(&mut values.name);
     ui.label("Content");
     ui.add(
         egui::TextEdit::multiline(&mut values.content)
@@ -502,12 +650,29 @@ fn render_text_editor(
             .desired_width(f32::INFINITY),
     );
     ui.horizontal(|ui| {
+        ui.label("Font family");
+        egui::ComboBox::from_id_salt(("font-family", overlay_id, values.id))
+            .selected_text(values.font_family.display_name())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut values.font_family,
+                    FontFamily::NotoSans,
+                    FontFamily::NotoSans.display_name(),
+                );
+                ui.selectable_value(
+                    &mut values.font_family,
+                    FontFamily::JetBrainsMono,
+                    FontFamily::JetBrainsMono.display_name(),
+                );
+            });
         ui.label("Font size");
         ui.add(
             egui::DragValue::new(&mut values.font_size)
                 .speed(0.5)
                 .suffix(" px"),
         );
+    });
+    ui.horizontal(|ui| {
         ui.label("Color");
         let mut color = egui::Color32::from_rgba_unmultiplied(
             values.color.red(),
@@ -518,6 +683,13 @@ fn render_text_editor(
         if ui.color_edit_button_srgba(&mut color).changed() {
             values.color = Color::rgba(color.r(), color.g(), color.b(), color.a());
         }
+        ui.label(format!(
+            "RGBA({}, {}, {}, {})",
+            values.color.red(),
+            values.color.green(),
+            values.color.blue(),
+            values.color.alpha()
+        ));
     });
     ui.horizontal(|ui| {
         ui.label("Alignment");
@@ -533,17 +705,11 @@ fn render_text_editor(
         ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
         ui.label("Y");
         ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
-        values.position = Position::new(x, y);
+        values.position = Position::new(
+            x.clamp(0.0, canvas.width() as f32),
+            y.clamp(0.0, canvas.height() as f32),
+        );
     });
-
-    ui.label("Canvas preview — drag to move the text widget");
-    render_canvas_preview(
-        ui,
-        canvas,
-        overlay_id,
-        &mut values,
-        &mut transient.preview_drag,
-    );
 
     if values != original {
         let _ = apply_text_editor_values(coordinator, overlay_id, values);
@@ -632,19 +798,58 @@ fn drag_matches(drag: Option<PreviewDrag>, overlay_id: OverlayId, widget_id: Tex
     drag.is_some_and(|drag| drag.overlay_id == overlay_id && drag.widget_id == widget_id)
 }
 
+fn render_collection_preview(
+    ui: &mut egui::Ui,
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+    overlay_id: OverlayId,
+) {
+    let Some(overlay) = coordinator.overlay(overlay_id) else {
+        clear_inspector_state(transient);
+        return;
+    };
+    let canvas = overlay.canvas();
+    let widgets = overlay.widgets().to_vec();
+    let selected_widget_id = coordinator.selected_widget_id();
+    let moved = render_canvas_preview(
+        ui,
+        canvas,
+        overlay_id,
+        &widgets,
+        selected_widget_id,
+        &mut transient.preview_drag,
+        #[cfg(test)]
+        &mut transient.control_rects,
+        #[cfg(test)]
+        &mut transient.preview_rect,
+    );
+    if let Some((widget_id, position)) = moved {
+        let _ = coordinator.update_overlay(overlay_id, |overlay| {
+            overlay.set_widget_position(widget_id, position)
+        });
+    }
+}
+
 fn render_canvas_preview(
     ui: &mut egui::Ui,
     canvas: crate::model::CanvasSize,
     overlay_id: OverlayId,
-    values: &mut TextEditorValues,
+    widgets: &[TextWidget],
+    selected_widget_id: Option<TextWidgetId>,
     drag: &mut Option<PreviewDrag>,
-) {
+    #[cfg(test)] control_rects: &mut HashMap<String, egui::Rect>,
+    #[cfg(test)] preview_rect: &mut Option<egui::Rect>,
+) -> Option<(TextWidgetId, Position)> {
     let scale = preview_scale(canvas, ui.available_width());
     let size = egui::vec2(
         canvas.width() as f32 * scale,
         canvas.height() as f32 * scale,
     );
     let (canvas_rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    #[cfg(test)]
+    {
+        *preview_rect = Some(canvas_rect);
+    }
     let painter = ui.painter_at(canvas_rect);
     painter.rect_filled(canvas_rect, 0.0, egui::Color32::from_gray(24));
     painter.rect_stroke(
@@ -653,70 +858,87 @@ fn render_canvas_preview(
         egui::Stroke::new(1.0_f32, egui::Color32::from_gray(96)),
     );
 
-    let color = egui::Color32::from_rgba_unmultiplied(
-        values.color.red(),
-        values.color.green(),
-        values.color.blue(),
-        values.color.alpha(),
-    );
-    let region_width = ((canvas.width() as f32 - values.position.x()) * scale).max(0.0);
-    // Capping paint size protects the editor from huge but model-valid values;
-    // it is deliberately local and never written back to the authoritative model.
-    let paint_font_size = (values.font_size * scale).clamp(1.0, PREVIEW_MAX_PAINT_FONT);
-    let mut layout = egui::text::LayoutJob::simple(
-        values.content.clone(),
-        egui::FontId::proportional(paint_font_size),
-        color,
-        region_width,
-    );
-    layout.halign = alignment_to_egui(values.alignment);
-    layout.wrap.max_width = region_width;
-    let galley = painter.layout_job(layout);
-    let region_origin = canvas_to_preview(canvas_rect.min, values.position, scale);
-    let paint_origin = aligned_paint_origin(region_origin, region_width, values.alignment);
-    painter.galley(paint_origin, galley.clone(), color);
-
-    let region = text_region_rect(canvas_rect, values.position, scale, galley.size().y);
-    let visual_rect = galley
-        .mesh_bounds
-        .translate(paint_origin.to_vec2())
-        .intersect(region);
-    let hitbox = widget_hitbox(canvas_rect, region_origin, visual_rect);
-    let response = ui.interact(
-        hitbox,
-        ui.make_persistent_id((
-            "preview-text",
-            overlay_id.to_string(),
-            values.id.to_string(),
-        )),
-        egui::Sense::drag(),
-    );
-
-    if response.drag_started()
-        && let Some(pointer) = response.interact_pointer_pos()
-        && hitbox.contains(pointer)
-    {
-        *drag = Some(PreviewDrag {
-            overlay_id,
-            widget_id: values.id,
-            pointer_offset: pointer - region_origin,
-        });
-    }
-    if response.dragged()
-        && let (Some(active), Some(pointer)) = (*drag, response.interact_pointer_pos())
-        && drag_matches(Some(active), overlay_id, values.id)
-    {
-        values.position = preview_to_canvas(
-            canvas_rect.min,
-            pointer,
-            active.pointer_offset,
-            scale,
-            canvas,
+    let mut moved = None;
+    for widget in widgets.iter().rev() {
+        let color = egui::Color32::from_rgba_unmultiplied(
+            widget.color().red(),
+            widget.color().green(),
+            widget.color().blue(),
+            widget.color().alpha(),
         );
+        let region_width = ((canvas.width() as f32 - widget.position().x()) * scale).max(0.0);
+        // Capping paint size protects the editor from huge but model-valid values;
+        // it is deliberately local and never written back to the authoritative model.
+        let paint_font_size = (widget.font_size() * scale).clamp(1.0, PREVIEW_MAX_PAINT_FONT);
+        let font_id = match widget.font_family() {
+            FontFamily::NotoSans => egui::FontId::proportional(paint_font_size),
+            FontFamily::JetBrainsMono => egui::FontId::monospace(paint_font_size),
+        };
+        let mut layout = egui::text::LayoutJob::simple(
+            widget.content().to_owned(),
+            font_id,
+            color,
+            region_width,
+        );
+        layout.halign = alignment_to_egui(widget.alignment());
+        layout.wrap.max_width = region_width;
+        let galley = painter.layout_job(layout);
+        let region_origin = canvas_to_preview(canvas_rect.min, widget.position(), scale);
+        let paint_origin = aligned_paint_origin(region_origin, region_width, widget.alignment());
+        painter.galley(paint_origin, galley.clone(), color);
+
+        let region = text_region_rect(canvas_rect, widget.position(), scale, galley.size().y);
+        let visual_rect = galley
+            .mesh_bounds
+            .translate(paint_origin.to_vec2())
+            .intersect(region);
+        let hitbox = widget_hitbox(canvas_rect, region_origin, visual_rect);
+        if selected_widget_id != Some(widget.id()) {
+            continue;
+        }
+        #[cfg(test)]
+        control_rects.insert("Canvas preview".to_owned(), hitbox);
+        painter.rect_stroke(
+            hitbox,
+            0.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 198, 218)),
+        );
+        let response = ui.interact(
+            hitbox,
+            ui.make_persistent_id(("preview-text", overlay_id, widget.id())),
+            egui::Sense::drag(),
+        );
+
+        if response.drag_started()
+            && let Some(pointer) = response.interact_pointer_pos()
+            && hitbox.contains(pointer)
+        {
+            *drag = Some(PreviewDrag {
+                overlay_id,
+                widget_id: widget.id(),
+                pointer_offset: pointer - region_origin,
+            });
+        }
+        if response.dragged()
+            && let (Some(active), Some(pointer)) = (*drag, response.interact_pointer_pos())
+            && drag_matches(Some(active), overlay_id, widget.id())
+        {
+            moved = Some((
+                widget.id(),
+                preview_to_canvas(
+                    canvas_rect.min,
+                    pointer,
+                    active.pointer_offset,
+                    scale,
+                    canvas,
+                ),
+            ));
+        }
+        if response.drag_stopped() || !response.is_pointer_button_down_on() {
+            *drag = None;
+        }
     }
-    if response.drag_stopped() || !response.is_pointer_button_down_on() {
-        *drag = None;
-    }
+    moved
 }
 
 fn begin_create(transient: &mut TransientState) {
@@ -741,6 +963,8 @@ fn create_overlay_from_form(
                 .map_err(|error| error.to_string())?;
             transient.create_open = false;
             transient.dialog_error = None;
+            transient.inspector_target = None;
+            transient.preview_drag = None;
             Ok(())
         }
         _ => {
@@ -815,6 +1039,8 @@ fn confirm_delete(
         .map_err(|error| error.to_string())?;
     transient.delete_target = None;
     transient.dialog_error = None;
+    transient.inspector_target = None;
+    transient.preview_drag = None;
     Ok(())
 }
 
@@ -1149,6 +1375,8 @@ fn render_delete_dialog(
         .map(|overlay| overlay.name().to_owned())
     else {
         transient.delete_target = None;
+        transient.preview_drag = None;
+        transient.inspector_target = None;
         return;
     };
     let mut open = true;
@@ -1179,33 +1407,47 @@ fn render_delete_dialog(
     }
 }
 
-/// A small native-window-free semantic scenario harness for adapter tests.
+/// A native-window-free egui scenario harness.
 ///
-/// The harness renders frames for lifecycle state and routes named actions
-/// through the same shared action helpers as the native event handlers. It does
-/// not claim to replace a pixel-level native GUI smoke test.
+/// Unlike the old semantic-only helper, this harness drives actual egui input,
+/// retains the emitted shape list, and exposes the rectangles produced for
+/// stable widget selector IDs. It remains deterministic and does not claim to
+/// replace a pixel-level native GUI smoke test.
 #[cfg(test)]
 pub struct ScenarioHarness {
     context: egui::Context,
     app: ChikachikaApp,
     last_copied_text: String,
     last_open_url: Option<egui::OpenUrl>,
+    last_shapes: Vec<egui::epaint::ClippedShape>,
+    screen_size: egui::Vec2,
 }
 
 #[cfg(test)]
 impl ScenarioHarness {
     /// Creates a harness from deterministic startup state.
     pub fn new(outcome: BootstrapOutcome) -> Self {
-        Self {
-            context: egui::Context::default(),
-            app: ChikachikaApp::from_bootstrap(outcome),
-            last_copied_text: String::new(),
-            last_open_url: None,
-        }
+        Self::new_with_size(outcome, egui::vec2(960.0, 640.0))
     }
 
     /// Creates a harness from deterministic startup state and settings.
     pub fn new_with_settings(outcome: BootstrapOutcome, settings: SettingsState) -> Self {
+        Self::new_with_size_and_settings(outcome, settings, egui::vec2(960.0, 640.0))
+    }
+
+    fn new_with_size(outcome: BootstrapOutcome, screen_size: egui::Vec2) -> Self {
+        Self::new_with_size_and_settings(
+            outcome,
+            SettingsState::from_settings(SettingsStore::at("settings.json"), Settings::default()),
+            screen_size,
+        )
+    }
+
+    fn new_with_size_and_settings(
+        outcome: BootstrapOutcome,
+        settings: SettingsState,
+        screen_size: egui::Vec2,
+    ) -> Self {
         Self {
             context: egui::Context::default(),
             app: ChikachikaApp::from_application_bootstrap(ApplicationBootstrap::new(
@@ -1213,17 +1455,83 @@ impl ScenarioHarness {
             )),
             last_copied_text: String::new(),
             last_open_url: None,
+            last_shapes: Vec::new(),
+            screen_size,
         }
     }
 
-    /// Advances one egui frame.
+    fn raw_input(&self, events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                self.screen_size,
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// Advances one egui frame with no input events.
     pub fn frame(&mut self) {
+        self.frame_events(Vec::new());
+    }
+
+    fn frame_events(&mut self, events: Vec<egui::Event>) {
+        let input = self.raw_input(events);
+        #[cfg(test)]
+        {
+            self.app.transient.widget_selector_rects.clear();
+            self.app.transient.control_rects.clear();
+            self.app.transient.preview_rect = None;
+        }
         let app = &mut self.app;
-        let output = self
-            .context
-            .run(egui::RawInput::default(), |context| app.render(context));
+        let output = self.context.run(input, |context| app.render(context));
         self.last_copied_text = output.platform_output.copied_text;
         self.last_open_url = output.platform_output.open_url;
+        self.last_shapes = output.shapes;
+    }
+
+    /// Sends one real egui event and renders the resulting frame.
+    pub fn event(&mut self, event: egui::Event) {
+        self.frame_events(vec![event]);
+    }
+
+    /// Sends a real pointer-move event.
+    pub fn pointer_move(&mut self, position: egui::Pos2) {
+        self.event(egui::Event::PointerMoved(position));
+    }
+
+    /// Sends a real pointer button event.
+    pub fn pointer_button(&mut self, position: egui::Pos2, pressed: bool) {
+        self.event(egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+
+    /// Sends a complete real pointer click sequence at a screen coordinate.
+    pub fn pointer_click(&mut self, position: egui::Pos2) {
+        self.pointer_move(position);
+        self.pointer_button(position, true);
+        self.pointer_button(position, false);
+    }
+
+    /// Sends a real egui key event.
+    pub fn key(&mut self, key: egui::Key, pressed: bool) {
+        self.event(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+
+    /// Returns the actual shapes emitted by the last frame.
+    pub fn shapes(&self) -> &[egui::epaint::ClippedShape] {
+        &self.last_shapes
     }
 
     /// Returns the current adapter state for semantic assertions.
@@ -1241,10 +1549,22 @@ impl ScenarioHarness {
         &mut self.app
     }
 
-    /// Activates a semantic adapter action by its exact label and renders the
-    /// next frame. This deterministic path exercises the same shared action
-    /// helpers as the egui event handlers without requiring native-window or
-    /// pixel-coordinate automation.
+    /// Returns the stable-ID row rectangle emitted by the last frame.
+    pub fn widget_selector_rect(&self, widget_id: TextWidgetId) -> Option<egui::Rect> {
+        self.app
+            .transient
+            .widget_selector_rects
+            .get(&widget_id)
+            .copied()
+    }
+
+    /// Returns a named control rectangle emitted by the last frame.
+    pub fn control_rect(&self, label: &str) -> Option<egui::Rect> {
+        self.app.transient.control_rects.get(label).copied()
+    }
+
+    /// Activates a semantic adapter action by exact label and renders the next
+    /// frame. Pointer/key-oriented scenarios should use the event methods above.
     pub fn click(&mut self, label: &str) -> Result<(), String> {
         match label {
             "Copy URL" => copy_selected_url(&self.context, self.app.coordinator.as_ref())?,
@@ -1292,10 +1612,7 @@ impl ScenarioHarness {
         self.app.transient.settings_save_succeeded = false;
     }
 
-    /// Returns whether the current adapter state exposes the requested visible
-    /// text or control label. This is a semantic state check, while visual
-    /// layout remains a short manual validation task.
-    /// Returns whether the semantic rendered-state model exposes a label.
+    /// Returns whether the current rendered state exposes the requested label.
     pub fn has_label(&self, label: &str) -> bool {
         if let Some(failure) = self.app.blocked.as_ref() {
             return failure.error().to_string().contains(label);
@@ -1325,41 +1642,56 @@ impl ScenarioHarness {
                 "Select an overlay or use Create overlay to make your first workspace.".to_owned(),
             );
         }
-        if coordinator.selected_overlay().is_some() {
+        if let Some(overlay) = coordinator.selected_overlay() {
             visible.extend([
+                overlay.name().to_owned(),
                 "Rename".to_owned(),
                 "Delete".to_owned(),
+                "Widget selector".to_owned(),
+                "Frontmost first".to_owned(),
+                "Add text widget".to_owned(),
                 "Browser-source URL".to_owned(),
             ]);
             if let Some(url) = coordinator.selected_url() {
-                visible.push(url);
-                visible.extend(["Copy URL".to_owned(), "Open in browser".to_owned()]);
+                visible.extend([url, "Copy URL".to_owned(), "Open in browser".to_owned()]);
             } else {
                 visible.push(
                     "Unavailable until the local server successfully binds and reports readiness."
                         .to_owned(),
                 );
             }
-            if let Some(overlay) = coordinator.selected_overlay() {
-                visible.push(overlay.name().to_owned());
-                visible.push("Text widget".to_owned());
-                if overlay.text_widget().is_some() {
-                    visible.extend([
-                        "Remove text widget".to_owned(),
-                        "Content".to_owned(),
-                        "Font size".to_owned(),
-                        "Color".to_owned(),
-                        "Alignment".to_owned(),
-                        "Position".to_owned(),
-                        "Canvas preview — drag to move the text widget".to_owned(),
-                    ]);
-                } else {
-                    visible.extend([
-                        "This overlay has no text widget.".to_owned(),
-                        "Add text widget".to_owned(),
-                    ]);
-                }
+            if let Some(widget) = coordinator.selected_widget() {
+                visible.extend([
+                    widget.name().to_owned(),
+                    "Widget inspector".to_owned(),
+                    "Stable widget identity".to_owned(),
+                    "Duplicate".to_owned(),
+                    "Delete widget".to_owned(),
+                    "Forward".to_owned(),
+                    "Backward".to_owned(),
+                    "Name".to_owned(),
+                    "Content".to_owned(),
+                    "Font family".to_owned(),
+                    "Font size".to_owned(),
+                    "Color".to_owned(),
+                    "RGBA".to_owned(),
+                    "Alignment".to_owned(),
+                    "Position".to_owned(),
+                    "Canvas preview".to_owned(),
+                ]);
+            } else {
+                visible.extend([
+                    "Overlay information".to_owned(),
+                    "No widget selected.".to_owned(),
+                    "Select a widget from the frontmost-first list to edit it.".to_owned(),
+                ]);
             }
+            visible.extend(
+                overlay
+                    .widgets()
+                    .iter()
+                    .map(|widget| widget.name().to_owned()),
+            );
         }
         if let Some(error) = coordinator.last_error() {
             visible.push(error.to_owned());
@@ -1429,6 +1761,23 @@ mod tests {
         HeadlessCoordinator::empty(Store::at("test-overlays.json"))
     }
 
+    fn setup_widgets(harness: &mut ScenarioHarness) -> (OverlayId, Vec<TextWidgetId>) {
+        let coordinator = harness.app_mut().coordinator_mut().unwrap();
+        let overlay_id = coordinator
+            .create_overlay("Live", 320, 240)
+            .expect("create overlay");
+        let back = coordinator
+            .add_widget(overlay_id, TextWidget::new("Back"))
+            .unwrap();
+        let middle = coordinator
+            .add_widget(overlay_id, TextWidget::new("Middle"))
+            .unwrap();
+        let front = coordinator
+            .add_widget(overlay_id, TextWidget::new("Front"))
+            .unwrap();
+        (overlay_id, vec![front, middle, back])
+    }
+
     #[test]
     fn workspace_exposes_complete_lifecycle_controls() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
@@ -1492,7 +1841,6 @@ mod tests {
         assert!(harness.app().coordinator().unwrap().is_dirty());
 
         harness.set_port_field("4_001");
-        // Underscores are not accepted by the deliberately plain whole-number input.
         assert!(harness.click("Save port for next launch").is_err());
         harness.set_port_field("4001");
         harness
@@ -1533,33 +1881,6 @@ mod tests {
         assert!(harness.has_label("Could not save port for next launch:"));
         assert!(harness.has_label("The previous configured port remains unchanged."));
         assert!(!harness.has_label("Port saved for next launch."));
-
-        let malformed_path = directory.path().join("malformed.json");
-        std::fs::write(&malformed_path, b"not json").expect("write malformed settings");
-        let invalid_settings = SettingsState::load(SettingsStore::at(&malformed_path));
-        let prior_error = invalid_settings
-            .settings_error()
-            .expect("load error")
-            .to_string();
-        let mut invalid_harness = ScenarioHarness::new_with_settings(
-            BootstrapOutcome::Ready(ready_app()),
-            invalid_settings,
-        );
-        invalid_harness.frame();
-        invalid_harness.set_port_field("4001");
-        // Restore the failed-save shape without replacing the malformed source.
-        std::fs::remove_file(&malformed_path).expect("remove malformed source");
-        std::fs::create_dir(&malformed_path).expect("make settings destination a directory");
-        assert!(invalid_harness.click("Save port for next launch").is_err());
-        assert_eq!(invalid_harness.settings().configured_port(), None);
-        assert_eq!(
-            invalid_harness
-                .settings()
-                .settings_error()
-                .expect("prior load error remains")
-                .to_string(),
-            prior_error
-        );
     }
 
     #[test]
@@ -1586,86 +1907,6 @@ mod tests {
         assert_eq!(harness.settings().configured_port(), Some(4_001));
         assert!(harness.settings().settings_error().is_none());
         assert!(harness.has_label("Port saved for next launch."));
-        assert_eq!(
-            SettingsStore::at(&settings_path)
-                .load()
-                .unwrap()
-                .server_port(),
-            4_001
-        );
-    }
-
-    #[test]
-    fn port_change_explains_restart_and_does_not_rebind_or_create_url() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let settings_path = directory.path().join("settings.json");
-        let settings = SettingsState::from_settings(
-            SettingsStore::at(&settings_path),
-            Settings::new(4_000).expect("valid settings"),
-        );
-        let mut harness =
-            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
-        harness.frame();
-        harness.click("Create overlay").expect("open create dialog");
-        harness.set_create_fields("Live", "320", "240");
-        harness.click("Create").expect("create overlay");
-        assert!(
-            harness
-                .app()
-                .coordinator()
-                .unwrap()
-                .selected_url()
-                .is_none()
-        );
-        harness
-            .app_mut()
-            .coordinator_mut()
-            .unwrap()
-            .set_server_address("127.0.0.1:4000".parse().expect("socket address"));
-        harness.set_port_field("4001");
-        harness
-            .click("Save port for next launch")
-            .expect("save next-launch port");
-
-        assert_eq!(
-            harness
-                .app()
-                .coordinator()
-                .unwrap()
-                .server_address()
-                .unwrap()
-                .port(),
-            4_000
-        );
-        assert_eq!(harness.settings().configured_port(), Some(4_001));
-        assert!(harness.has_label("Running server remains on port 4000 until restart."));
-        assert!(harness.has_label("Changes take effect after restarting Chikachika."));
-        // Once readiness is explicitly reported, the coordinator—not the
-        // settings form—becomes the URL authority.
-        assert!(
-            harness
-                .app()
-                .coordinator()
-                .unwrap()
-                .selected_url()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn blocked_mode_shows_exact_error_and_no_save_or_url() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("overlays.json");
-        std::fs::write(&path, b"not json").unwrap();
-        let outcome =
-            HeadlessCoordinator::<crate::server::OverlayHub>::bootstrap_outcome(Store::at(path));
-        let mut harness = ScenarioHarness::new(outcome);
-        harness.frame();
-        assert!(harness.app().is_blocked());
-        assert!(harness.app().coordinator().is_none());
-        assert!(harness.has_label("persisted overlays"));
-        assert!(!harness.has_label("Save"));
-        assert!(!harness.has_label("Retry"));
     }
 
     #[test]
@@ -1688,6 +1929,7 @@ mod tests {
         );
         assert!(coordinator.is_dirty());
         assert!(harness.has_label("Starting Soon"));
+        assert!(harness.has_label("No widget selected."));
     }
 
     #[test]
@@ -1724,7 +1966,6 @@ mod tests {
     #[test]
     fn delete_cancel_and_confirm_are_target_specific() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
-        harness.frame();
         harness.click("Create overlay").expect("open first dialog");
         harness.set_create_fields("First", "320", "240");
         harness.click("Create").expect("create first overlay");
@@ -1753,136 +1994,6 @@ mod tests {
         let coordinator = harness.app().coordinator().unwrap();
         assert!(coordinator.overlay(first_id).is_none());
         assert_eq!(coordinator.selected_overlay().unwrap().name(), "Second");
-    }
-
-    #[test]
-    fn errors_remain_visible_and_recoverable() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("overlays.json");
-        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(
-            HeadlessCoordinator::empty(Store::at(&path)),
-        ));
-        harness.frame();
-        harness.click("Create overlay").expect("open create dialog");
-        harness.set_create_fields("Unsaved", "320", "240");
-        harness.click("Create").expect("create overlay");
-        std::fs::create_dir(&path).expect("replace source with directory");
-        assert!(harness.click("Save").is_err());
-        assert!(harness.has_label("could not atomically replace persisted overlays"));
-        assert!(harness.app().coordinator().unwrap().is_dirty());
-        assert!(harness.has_label("Save"));
-    }
-
-    #[test]
-    fn server_unavailable_hides_url_and_readiness_shows_exact_selected_url() {
-        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
-        harness.frame();
-        harness.click("Create overlay").expect("open create dialog");
-        harness.set_create_fields("Live", "320", "240");
-        harness.click("Create").expect("create overlay");
-        assert!(
-            harness
-                .app()
-                .coordinator()
-                .unwrap()
-                .selected_url()
-                .is_none()
-        );
-        assert!(!harness.has_label("Copy URL"));
-        assert!(!harness.has_label("Open in browser"));
-        assert!(harness.has_label(
-            "Unavailable until the local server successfully binds and reports readiness."
-        ));
-        harness
-            .app_mut()
-            .coordinator_mut()
-            .unwrap()
-            .set_server_address("127.0.0.1:51737".parse().expect("socket address"));
-        harness.frame();
-        let url = harness.app().coordinator().unwrap().selected_url().unwrap();
-        assert_eq!(
-            url,
-            format!(
-                "http://127.0.0.1:51737/overlay/{}",
-                harness
-                    .app()
-                    .coordinator()
-                    .unwrap()
-                    .selected_overlay_id()
-                    .unwrap()
-            )
-        );
-        assert!(harness.has_label("Browser-source URL"));
-        assert!(harness.has_label("Copy URL"));
-        assert!(harness.has_label("Open in browser"));
-    }
-
-    #[test]
-    fn url_actions_emit_the_exact_selected_url() {
-        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
-        harness.frame();
-        assert!(!harness.has_label("Copy URL"));
-        assert!(!harness.has_label("Open in browser"));
-        assert!(harness.click("Copy URL").is_err());
-        assert!(harness.click("Open in browser").is_err());
-        assert_eq!(harness.copied_text(), "");
-        assert_eq!(harness.opened_url(), None);
-
-        harness.click("Create overlay").expect("open create dialog");
-        harness.set_create_fields("Live", "320", "240");
-        harness.click("Create").expect("create overlay");
-        assert!(harness.click("Copy URL").is_err());
-        assert!(harness.click("Open in browser").is_err());
-        assert_eq!(harness.copied_text(), "");
-        assert_eq!(harness.opened_url(), None);
-
-        harness
-            .app_mut()
-            .coordinator_mut()
-            .unwrap()
-            .set_server_address("127.0.0.1:51737".parse().expect("socket address"));
-        harness.frame();
-        let url = harness.app().coordinator().unwrap().selected_url().unwrap();
-
-        harness.click("Copy URL").expect("copy selected URL");
-        assert_eq!(harness.copied_text(), url);
-        assert_eq!(harness.opened_url(), None);
-
-        harness
-            .click("Open in browser")
-            .expect("open selected URL in browser");
-        assert_eq!(harness.copied_text(), "");
-        assert_eq!(harness.opened_url(), Some(url.as_str()));
-        assert_eq!(harness.opens_in_new_tab(), Some(false));
-    }
-
-    #[test]
-    fn url_actions_hide_when_hosted_overlay_diverges_from_workspace() {
-        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
-        harness.click("Create overlay").expect("open create dialog");
-        harness.set_create_fields("Live", "320", "240");
-        harness.click("Create").expect("create overlay");
-        let coordinator = harness.app_mut().coordinator_mut().unwrap();
-        coordinator.set_server_address("127.0.0.1:51737".parse().expect("socket address"));
-        let overlay_id = coordinator.selected_overlay_id().unwrap();
-        coordinator
-            .hub()
-            .remove(overlay_id)
-            .expect("remove hosted overlay");
-        harness.frame();
-
-        assert!(
-            harness
-                .app()
-                .coordinator()
-                .unwrap()
-                .selected_url()
-                .is_none()
-        );
-        assert!(!harness.has_label("Copy URL"));
-        assert!(!harness.has_label("Open in browser"));
-        assert!(harness.click("Copy URL").is_err());
-        assert!(harness.click("Open in browser").is_err());
     }
 
     #[test]
@@ -1955,190 +2066,223 @@ mod tests {
     }
 
     #[test]
-    fn preview_drag_state_is_scoped_to_overlay_and_widget() {
-        let first_overlay = crate::model::Overlay::with_dimensions("First", 320, 240).unwrap();
-        let second_overlay = crate::model::Overlay::with_dimensions("Second", 320, 240).unwrap();
-        let first_widget = TextWidget::new("first");
-        let second_widget = TextWidget::new("second");
-        let drag = PreviewDrag {
-            overlay_id: first_overlay.id(),
-            widget_id: first_widget.id(),
-            pointer_offset: egui::vec2(3.0, 4.0),
-        };
-        assert!(drag_matches(
-            Some(drag),
-            first_overlay.id(),
-            first_widget.id()
-        ));
-        assert!(!drag_matches(
-            Some(drag),
-            second_overlay.id(),
-            first_widget.id()
-        ));
-        assert!(!drag_matches(
-            Some(drag),
-            first_overlay.id(),
-            second_widget.id()
-        ));
-        assert!(!drag_matches(None, first_overlay.id(), first_widget.id()));
-    }
-
-    #[test]
-    fn semantic_editor_controls_enforce_zero_or_one_widget() {
+    fn multi_widget_editor_scenario() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
-        harness.click("Create overlay").expect("open create dialog");
-        harness.set_create_fields("Live", "320", "240");
-        harness.click("Create").expect("create overlay");
-        assert!(harness.has_label("Add text widget"));
-        assert!(!harness.has_label("Remove text widget"));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        assert!(
+            harness
+                .shapes()
+                .iter()
+                .any(|shape| matches!(shape.shape, egui::Shape::Text(_)))
+        );
 
-        harness
-            .click("Add text widget")
-            .expect("add the optional widget");
-        assert!(!harness.has_label("Add text widget"));
-        assert!(harness.has_label("Remove text widget"));
-        assert!(harness.has_label("Content"));
-        assert!(harness.has_label("Font size"));
-        assert!(harness.has_label("Color"));
-        assert!(harness.has_label("Alignment"));
-        assert!(harness.has_label("Position"));
-        assert!(harness.has_label("Canvas preview"));
+        let middle_rect = harness
+            .widget_selector_rect(ids[1])
+            .expect("middle selector row shape");
+        harness.pointer_click(middle_rect.center());
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[1])
+        );
 
-        harness
-            .click("Remove text widget")
-            .expect("remove the optional widget");
-        assert!(harness.has_label("Add text widget"));
-        assert!(!harness.has_label("Remove text widget"));
+        let add_rect = harness.control_rect("Add text widget").expect("Add shape");
+        harness.pointer_click(add_rect.center());
+        let coordinator = harness.app().coordinator().unwrap();
+        assert_eq!(coordinator.overlay(overlay_id).unwrap().widgets().len(), 4);
+        let inserted = coordinator.selected_widget_id().expect("new selection");
+        assert_ne!(inserted, ids[1]);
+
+        let duplicate_rect = harness.control_rect("Duplicate").expect("Duplicate shape");
+        harness.pointer_click(duplicate_rect.center());
+        let coordinator = harness.app().coordinator().unwrap();
+        assert_eq!(coordinator.overlay(overlay_id).unwrap().widgets().len(), 5);
+        assert_eq!(
+            coordinator.overlay(overlay_id).unwrap().widgets()[0].id(),
+            coordinator.selected_widget_id().unwrap()
+        );
+
+        let delete_rect = harness.control_rect("Delete widget").expect("Delete shape");
+        harness.pointer_move(delete_rect.center());
+        let delete_rect = harness
+            .control_rect("Delete widget")
+            .expect("Delete shape after pointer move");
+        harness.pointer_button(delete_rect.center(), true);
+        harness.pointer_button(delete_rect.center(), false);
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .len(),
+            4
+        );
     }
 
     #[test]
-    fn text_editor_adds_updates_and_removes_through_the_coordinator() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let mut coordinator =
-            HeadlessCoordinator::empty(Store::at(directory.path().join("overlays.json")));
-        let overlay_id = coordinator
-            .create_overlay("Live", 320, 240)
-            .expect("create overlay");
-        coordinator.save().expect("establish clean state");
+    fn multi_widget_preview_paint_order() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        {
+            let coordinator = harness.app_mut().coordinator_mut().unwrap();
+            coordinator
+                .update_overlay(overlay_id, |overlay| {
+                    overlay.set_widget_position(ids[0], Position::new(10.0, 10.0))?;
+                    overlay.set_widget_position(ids[1], Position::new(100.0, 60.0))?;
+                    overlay.set_widget_position(ids[2], Position::new(200.0, 110.0))
+                })
+                .unwrap();
+        }
+        harness.frame();
+        let preview_rect = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("actual preview canvas shape");
+        let preview_texts: Vec<String> = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if preview_rect.contains(text.pos)
+                        || preview_rect.contains(text.pos + egui::vec2(1.0, 1.0)) =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .filter(|text| matches!(text.as_str(), "Back" | "Middle" | "Front"))
+            .collect();
+        // Actual preview text primitives must be emitted back-to-front even
+        // though index zero is frontmost in the authoritative model.
+        assert_eq!(
+            preview_texts,
+            vec!["Back".to_owned(), "Middle".to_owned(), "Front".to_owned()]
+        );
+        assert_eq!(ids.len(), 3);
+    }
 
-        add_text_widget(&mut coordinator, overlay_id).expect("add text widget");
-        let widget = coordinator
-            .overlay(overlay_id)
+    #[test]
+    fn selection_change_clears_stale_drag() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (_overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.app_mut().transient.preview_drag = Some(PreviewDrag {
+            overlay_id: harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_overlay_id()
+                .unwrap(),
+            widget_id: ids[0],
+            pointer_offset: egui::vec2(7.0, 9.0),
+        });
+        harness
+            .app_mut()
+            .coordinator_mut()
             .unwrap()
-            .text_widget()
+            .select_widget(ids[1])
             .unwrap();
-        let widget_id = widget.id();
-        assert_eq!(widget.content(), "Text");
-        assert!(coordinator.is_dirty());
+        harness.key(egui::Key::Escape, true);
+        harness.frame();
+        assert!(harness.app().transient.preview_drag.is_none());
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[1])
+        );
+    }
 
-        coordinator.save().expect("save added widget");
+    #[test]
+    fn widget_mutations_use_ids_and_keep_inspector_target_stable() {
+        let mut coordinator = ready_app();
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        let first = coordinator
+            .add_widget(overlay_id, TextWidget::new("First"))
+            .unwrap();
+        let second = coordinator
+            .add_widget(overlay_id, TextWidget::new("Second"))
+            .unwrap();
+        assert_eq!(coordinator.selected_widget_id(), Some(second));
         apply_text_editor_values(
             &mut coordinator,
             overlay_id,
             TextEditorValues {
-                id: widget_id,
-                content: "Starting\nSoon".to_owned(),
+                id: second,
+                name: "Renamed".to_owned(),
+                content: "Changed".to_owned(),
+                font_family: FontFamily::JetBrainsMono,
                 position: Position::new(123.0, 45.0),
                 font_size: 42.0,
                 color: Color::rgba(10, 20, 30, 128),
                 alignment: Alignment::Center,
             },
         )
-        .expect("update all supported properties");
-        let widget = coordinator
-            .overlay(overlay_id)
-            .unwrap()
-            .text_widget()
+        .unwrap();
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(second)
+                .unwrap()
+                .name(),
+            "Renamed"
+        );
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(second)
+                .unwrap()
+                .font_family(),
+            FontFamily::JetBrainsMono
+        );
+        coordinator
+            .move_widget_backward(overlay_id, second)
             .unwrap();
-        assert_eq!(widget.id(), widget_id);
-        assert_eq!(widget.content(), "Starting\nSoon");
-        assert_eq!(widget.position(), Position::new(123.0, 45.0));
-        assert_eq!(widget.font_size(), 42.0);
-        assert_eq!(widget.color(), Color::rgba(10, 20, 30, 128));
-        assert_eq!(widget.alignment(), Alignment::Center);
-        assert!(coordinator.is_dirty());
-        let published_overlay = coordinator
-            .hub()
-            .snapshot(overlay_id)
-            .expect("published overlay remains available")
-            .expect("published overlay exists");
-        let browser_snapshot = crate::browser::project(&published_overlay);
-        assert_eq!(browser_snapshot.overlay_id(), &overlay_id.to_string());
-        assert_eq!(
-            browser_snapshot.revision(),
-            coordinator
-                .overlay(overlay_id)
-                .expect("overlay remains present")
-                .revision()
-        );
-        let browser_widget = browser_snapshot.text_widget().expect("browser text widget");
-        assert_eq!(browser_widget.widget_id(), &widget_id.to_string());
-        assert_eq!(browser_widget.content(), "Starting\nSoon");
-        assert_eq!(browser_widget.position().x(), 123.0);
-        assert_eq!(browser_widget.position().y(), 45.0);
-        assert_eq!(browser_widget.font_size(), 42.0);
-        assert_eq!(browser_widget.color().alpha(), 128);
-        assert_eq!(
-            browser_widget.alignment(),
-            crate::browser::BrowserAlignment::Center
-        );
+        assert_eq!(coordinator.selected_widget_id(), Some(second));
+        coordinator.delete_selected_widget().unwrap();
+        assert_eq!(coordinator.selected_widget_id(), Some(first));
+    }
 
-        coordinator.save().expect("save valid edit");
-        let prior = coordinator.overlay(overlay_id).unwrap().clone();
-        let mut invalid = TextEditorValues::from_widget(prior.text_widget().unwrap());
-        invalid.font_size = 0.0;
-        assert!(apply_text_editor_values(&mut coordinator, overlay_id, invalid).is_err());
-        assert_eq!(coordinator.overlay(overlay_id).unwrap(), &prior);
-        assert!(!coordinator.is_dirty());
-        assert!(coordinator.last_error().unwrap().contains("font size"));
-
-        let mut large = TextEditorValues::from_widget(prior.text_widget().unwrap());
-        large.font_size = 2048.0;
-        apply_text_editor_values(&mut coordinator, overlay_id, large)
-            .expect("model-valid font size is accepted without UI clamping");
+    #[test]
+    fn no_widget_selection_shows_overlay_information_without_implicit_selection() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (_overlay_id, _ids) = setup_widgets(&mut harness);
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .clear_widget_selection();
+        harness.frame();
+        assert!(harness.has_label("Overlay information"));
+        assert!(harness.has_label("No widget selected."));
         assert_eq!(
-            coordinator
-                .overlay(overlay_id)
-                .unwrap()
-                .text_widget()
-                .unwrap()
-                .font_size(),
-            2048.0
-        );
-
-        remove_text_widget(&mut coordinator, overlay_id, widget_id).expect("remove widget");
-        assert!(
-            coordinator
-                .overlay(overlay_id)
-                .unwrap()
-                .text_widget()
-                .is_none()
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            None
         );
     }
 
     #[test]
-    fn text_editor_url_and_port_controls_are_present() {
+    fn gui_production_uses_ordered_id_based_inspector() {
         let source = include_str!("gui.rs");
         let production = source
-            .split("/// A small native-window-free semantic scenario harness")
+            .split("/// A native-window-free egui scenario harness")
             .next()
-            .expect("production adapter precedes its tests");
-        assert!(production.contains("TextEdit::multiline"));
-        assert!(production.contains("Add text widget"));
-        assert!(production.contains("Remove text widget"));
-        assert!(production.contains("Canvas preview"));
+            .expect("production adapter precedes tests");
+        assert!(production.contains("widgets().to_vec()"));
+        assert!(production.contains("iter().rev()"));
+        assert!(production.contains("selected_widget()"));
+        assert!(production.contains("set_widget_font_family"));
+        assert!(production.contains("Duplicate"));
+        assert!(production.contains("Delete widget"));
+        assert!(production.contains("Forward"));
+        assert!(production.contains("Backward"));
+        assert!(!production.contains("text_widget()"));
+        assert!(!production.contains("revision()"));
         assert!(production.contains("Browser-source URL"));
-        assert!(production.contains("Copy URL"));
-        assert!(production.contains("Open in browser"));
-        assert!(production.contains("copy_url"));
-        assert!(production.contains("open_url"));
-        assert!(production.contains("Save"));
-        assert!(production.contains("save_port_for_next_launch"));
-        assert!(production.contains("Current configured port"));
-        assert!(production.contains("Settings path"));
-        assert!(production.contains("MIN_PORT"));
-        assert!(production.contains("MAX_PORT"));
-        assert!(production.contains("Changes take effect after restarting Chikachika."));
-        assert!(production.contains("Confirm delete"));
+        assert!(production.contains("Save port for next launch"));
     }
 }
