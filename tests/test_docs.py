@@ -276,6 +276,18 @@ class CheckerTests(unittest.TestCase):
         doc.write_text(doc.read_text().replace("[combined](fdr/INDEX.md?x=1#records)", "[combined](missing.md?x=1#records)"), encoding="utf-8")
         self.assertInvalid("broken local link")
 
+    def test_link_discovery_excludes_worktrees_but_keeps_hidden_docs(self):
+        for directory in (".worktrees", ".agents", ".github"):
+            document = self.root / directory / "link-test.md"
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_text("[missing](does-not-exist.md)\n", encoding="utf-8")
+
+        errors = CHECK_DOCS.check_tree(self.root)
+
+        self.assertNotIn(".worktrees/link-test.md", "\n".join(errors))
+        self.assertIn(".agents/link-test.md", "\n".join(errors))
+        self.assertIn(".github/link-test.md", "\n".join(errors))
+
 class ProductContractTests(unittest.TestCase):
     def test_fdr_001_contract(self):
         path = ROOT / "docs/fdr/FDR-001-overlay-editing-and-local-browser-source.md"

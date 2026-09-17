@@ -90,6 +90,15 @@ def _within(root: Path, path: Path) -> bool:
     return True
 
 
+def _markdown_documents(root: Path):
+    """Yield repository Markdown files, excluding ignored workspace artifacts."""
+    for document in sorted(root.rglob("*.md")):
+        relative = document.relative_to(root)
+        if relative.parts and relative.parts[0] == ".worktrees":
+            continue
+        yield document
+
+
 def _links_outside_fences(text: str):
     in_fence = False
     fence_marker = ""
@@ -109,7 +118,7 @@ def _links_outside_fences(text: str):
 
 
 def _check_links(root: Path, errors: list[str]) -> None:
-    for document in sorted(root.rglob("*.md")):
+    for document in _markdown_documents(root):
         text = document.read_text(encoding="utf-8")
         for line_number, label, destination in _links_outside_fences(text):
             target = _resolve_link(root, document, destination)
