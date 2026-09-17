@@ -770,10 +770,11 @@ mod tests {
             overlay.set_widget_position(id, Position::new(1921.0, 0.0)),
             Err(ModelError::InvalidPosition { x: 1921.0, y: 0.0 })
         );
-        assert_eq!(
+        assert!(matches!(
             overlay.set_widget_font_size(id, f32::NAN),
-            Err(ModelError::InvalidFontSize { value: f32::NAN })
-        );
+            Err(ModelError::InvalidFontSize { value }) if value.is_nan()
+        ));
+        assert_eq!(overlay.widget(id).unwrap().font_size(), 22.0);
         assert_eq!(
             overlay.widget(id).unwrap().font_family(),
             FontFamily::NotoSans
