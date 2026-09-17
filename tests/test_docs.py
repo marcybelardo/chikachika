@@ -276,6 +276,18 @@ class CheckerTests(unittest.TestCase):
         doc.write_text(doc.read_text().replace("[combined](fdr/INDEX.md?x=1#records)", "[combined](missing.md?x=1#records)"), encoding="utf-8")
         self.assertInvalid("broken local link")
 
+    def test_link_discovery_excludes_worktrees_but_keeps_hidden_docs(self):
+        for directory in (".worktrees", ".agents", ".github"):
+            document = self.root / directory / "link-test.md"
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_text("[missing](does-not-exist.md)\n", encoding="utf-8")
+
+        errors = CHECK_DOCS.check_tree(self.root)
+
+        self.assertNotIn(".worktrees/link-test.md", "\n".join(errors))
+        self.assertIn(".agents/link-test.md", "\n".join(errors))
+        self.assertIn(".github/link-test.md", "\n".join(errors))
+
 class ProductContractTests(unittest.TestCase):
     def test_fdr_001_contract(self):
         path = ROOT / "docs/fdr/FDR-001-overlay-editing-and-local-browser-source.md"
@@ -838,7 +850,7 @@ class Milestone002DecisionContractTests(unittest.TestCase):
 
     def test_002_milestone_contract_links(self):
         milestone = (ROOT / "docs/TODO-0-0-2.md").read_text(encoding="utf-8")
-        self.assertIn("**Status:** Planned — implementation pending", milestone)
+        self.assertIn("**Status:** In progress — issue22 checkpoint delivered; remaining implementation pending", milestone)
         for path in (
             "fdr/FDR-003-multi-widget-composition-workspace.md",
             "fdr/FDR-004-bundled-offline-text-fonts.md",
@@ -853,8 +865,133 @@ class Milestone002DecisionContractTests(unittest.TestCase):
             self.assertIn(f"| #{issue} |", milestone, issue)
         product_section = milestone[milestone.index("## Product Requirements"):milestone.index("## Confirmed Scope")]
         quality_section = milestone[milestone.index("## Quality Requirements"):milestone.index("## Explicitly Out of Scope")]
-        self.assertNotRegex(product_section + quality_section, r"(?m)^- \[[xX]\]")
-        self.assertIn("do not exercise future runtime features", milestone)
+        # Issue22 has delivered the narrow model/persistence/browser/docs rows;
+        # remaining future workspace, history, font, Settings-window, and OBS
+        # requirements must still stay unchecked.
+        delivered = "\n".join(
+            line for line in product_section.splitlines() + quality_section.splitlines()
+            if line.startswith("- [x]")
+        )
+        self.assertIn("ordered widget model", delivered)
+        self.assertIn("Save and restore", delivered)
+        self.assertNotIn("Undo/redo", delivered)
+        self.assertNotIn("bundled collection", delivered)
+        self.assertNotIn("separate native window", delivered)
+        self.assertNotIn("OBS", delivered)
+        self.assertIn("they do not exercise runtime features", milestone)
+
+
+ISSUE22_TEST_SOURCE_MANIFEST = {
+    "src/model.rs": ("ordered_widget_mutations",),
+    "src/app.rs": ("widget_selection_lifecycle", "blocked_bootstrap_preserves_incompatible_store"),
+    "src/persistence.rs": ("format_two_round_trip_and_transient_omission", "format_one_rejected_non_destructively"),
+    "src/server.rs": ("hub_session_revision_lifecycle",),
+    "src/browser.rs": ("browser_multi_widget_projection_and_html",),
+    "src/gui.rs": ("multi_widget_editor_scenario", "multi_widget_preview_paint_order"),
+}
+
+
+class Issue22DocumentationCheckpointTests(unittest.TestCase):
+    """Keep the living issue22 checkpoint claims tied to named evidence."""
+
+    def _read(self, relative):
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_issue22_documentation_checkpoint(self):
+        readme = self._read("README.md")
+        agents = self._read("AGENTS.md")
+        architecture = self._read("docs/architecture/INDEX.md")
+        glossary = self._read("docs/GLOSSARY.md")
+        milestone = self._read("docs/TODO-0-0-2.md")
+        guide = self._read("docs/user/README.md")
+        workflow = self._read("docs/user/overlay-workflow.md")
+        getting_started = self._read("docs/user/getting-started.md")
+        obs = self._read("docs/user/obs-browser-source.md")
+        troubleshooting = self._read("docs/user/troubleshooting.md")
+        all_docs = "\\n".join((readme, agents, architecture, glossary, milestone, guide, workflow, getting_started, obs, troubleshooting))
+        normalized = re.sub(r"\s+", " ", all_docs)
+
+        # Delivered ordered model, coordinator boundary, and format-2 persistence.
+        for anchor in (
+            "ordered collection of zero or more text widgets",
+            "model index 0 is frontmost",
+            "HeadlessCoordinator",
+            "saved-content baseline",
+            "format 2",
+            "overlays.json",
+            "selection",
+            "delivery revisions",
+            "There is no format-1 overlay migration",
+            "incompatible existing store blocks startup",
+            "Separate format-1 `settings.json`",
+            "ProjectDirs::from(\"\", \"\", \"Chikachika\")",
+            "data_local_dir",
+            "config_local_dir",
+        ):
+            self.assertIn(anchor, normalized, anchor)
+
+        # Exact surfaced path rules and separate files remain user-visible.
+        self.assertIn("$XDG_DATA_HOME/chikachika/overlays.json", getting_started)
+        self.assertIn("$HOME/.local/share/chikachika/overlays.json", getting_started)
+        self.assertIn("$XDG_CONFIG_HOME/chikachika/settings.json", getting_started)
+        self.assertIn("$HOME/.config/chikachika/settings.json", getting_started)
+        self.assertIn("$HOME/Library/Application Support/Chikachika/overlays.json", getting_started)
+        self.assertIn("$HOME/Library/Application Support/Chikachika/settings.json", getting_started)
+        self.assertIn("settings panel surfaces the settings path", getting_started)
+        self.assertIn("blocked overlay startup", getting_started)
+        self.assertIn("surfaces the overlay source path", getting_started)
+
+        # Integrated browser contract: whole-array atomic validation and ID map.
+        for anchor in (
+            "complete `widgets`-array snapshots",
+            "validates them atomically",
+            "reconciles DOM nodes by stable widget ID",
+            "reverse DOM order",
+            "Number.MAX_SAFE_INTEGER",
+            "whole widgets array",
+            "removes absent nodes",
+            "preserves reverse DOM order for frontmost painting",
+        ):
+            self.assertIn(anchor, normalized, anchor)
+        self.assertNotIn("singular snapshot reconciliation", normalized)
+        self.assertNotIn("separate browser work", normalized)
+        self.assertNotIn("Pending browser work", milestone)
+
+        # Recovery is explicit and user-managed; no deletion or conversion promise.
+        for anchor in (
+            "copy it to a separately named backup",
+            "move the source",
+            "aside yourself",
+            "does not migrate",
+            "does not automatically delete",
+            "never silently converts",
+            "same-directory",
+            "not a power-loss durability guarantee",
+        ):
+            self.assertIn(anchor, normalized, anchor)
+
+        # This checkpoint is not the complete 0.0.2 milestone.
+        self.assertIn("**Status:** In progress — issue22 checkpoint delivered", milestone)
+        for issue in range(23, 28):
+            self.assertIn(f"#{issue}", milestone, issue)
+        self.assertIn("#23", readme)
+        self.assertIn("#24", readme)
+        self.assertIn("#25", readme)
+        self.assertIn("#26", readme)
+        self.assertIn("#27", readme)
+        self.assertIn("no font files are bundled yet", all_docs)
+        self.assertIn("native Settings window", all_docs)
+
+    def test_issue22_documentation_checkpoint_names_evidence(self):
+        milestone = self._read("docs/TODO-0-0-2.md")
+        architecture = self._read("docs/architecture/INDEX.md")
+        documentation = milestone + architecture
+        for source, test_names in ISSUE22_TEST_SOURCE_MANIFEST.items():
+            source_text = self._read(source)
+            for test_name in test_names:
+                self.assertIn(test_name, documentation, test_name)
+                self.assertRegex(source_text, rf"(?m)^\s*fn {test_name}\s*\(", f"{source}: {test_name}")
+        self.assertIn("issue22_documentation_checkpoint", milestone + self._read("README.md"))
 
 
 class CollaborationArtifactContractTests(unittest.TestCase):
