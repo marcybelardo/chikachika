@@ -461,6 +461,19 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
             self.operation_error = None;
             return Ok(());
         }
+        if updated.id() != id {
+            return Err(self.reject(CoordinatorError::Model(
+                ModelError::OverlayIdentityChanged {
+                    expected: id,
+                    found: updated.id(),
+                },
+            )));
+        }
+        let mut candidate = self.overlays.clone();
+        candidate[index] = updated.clone();
+        if let Err(error) = validate_collection(&candidate) {
+            return Err(self.reject(CoordinatorError::Model(error)));
+        }
         let selected_id = (self.selected == Some(id))
             .then_some(self.selected_widget)
             .flatten();
@@ -698,14 +711,97 @@ mod tests {
         let id = app.create_overlay("Live", 100, 100).unwrap();
         let widget = app.add_widget(id, "x").unwrap();
         app.select_widget(widget).unwrap();
+        app.save().unwrap();
         let before = app.overlays().to_vec();
+        let baseline = app.saved_content.clone();
+        let hub = app.hub();
+        let mut receiver = hub.subscribe(id).unwrap();
+        let revision = receiver.borrow_and_update().revision();
+
         assert!(
             app.update_overlay(id, |overlay| overlay
                 .set_widget_position(widget, crate::model::Position::new(101.0, 0.0)))
                 .is_err()
         );
         assert_eq!(app.overlays(), before);
+        assert_eq!(app.saved_content, baseline);
+        assert!(!app.is_dirty());
         assert_eq!(app.selected_widget_id(), Some(widget));
+        assert_eq!(hub.snapshot(id).unwrap(), Some(before[0].clone()));
+        assert_eq!(receiver.borrow().revision(), revision);
+        assert!(!receiver.has_changed().unwrap());
+    }
+
+    #[test]
+    fn rejected_candidate_identity_and_collection_duplicates_are_atomic() {
+        let d = tempfile::tempdir().unwrap();
+        let id_path = d.path().join("identity.json");
+        let mut app = coordinator(&id_path);
+        let id = app.create_overlay("Target", 100, 100).unwrap();
+        let first = app.add_widget(id, "first").unwrap();
+        let other = app.create_overlay("Other", 100, 100).unwrap();
+        let other_widget = app.add_widget(other, "other").unwrap();
+        app.select_overlay(id).unwrap();
+        app.select_widget(first).unwrap();
+        app.save().unwrap();
+        let before = app.overlays().to_vec();
+        let baseline = app.saved_content.clone();
+        let hub = app.hub();
+        let mut receiver = hub.subscribe(id).unwrap();
+        let revision = receiver.borrow_and_update().revision();
+
+        let replacement = Overlay::with_dimensions("Wrong ID", 100, 100).unwrap();
+        let replacement_id = replacement.id();
+        let identity_error = app
+            .update_overlay(id, |overlay| {
+                *overlay = replacement;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(matches!(
+            identity_error,
+            CoordinatorError::Model(ModelError::OverlayIdentityChanged {
+                expected,
+                found
+            }) if expected == id && found == replacement_id
+        ));
+        assert_eq!(app.overlays(), before);
+        assert_eq!(app.saved_content, baseline);
+        assert_eq!(app.selected_overlay_id(), Some(id));
+        assert_eq!(app.selected_widget_id(), Some(first));
+        assert_eq!(hub.snapshot(id).unwrap(), Some(before[0].clone()));
+        assert_eq!(receiver.borrow().revision(), revision);
+        assert!(!receiver.has_changed().unwrap());
+
+        let other_duplicate = app
+            .overlay(other)
+            .unwrap()
+            .widget(other_widget)
+            .unwrap()
+            .clone();
+        let duplicate_error = app
+            .update_overlay(id, move |overlay| {
+                *overlay = Overlay::from_parts(
+                    id,
+                    "Target".to_owned(),
+                    overlay.canvas(),
+                    vec![other_duplicate],
+                )?;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(matches!(
+            duplicate_error,
+            CoordinatorError::Model(ModelError::DuplicateWidgetId { id: duplicate })
+                if duplicate == other_widget
+        ));
+        assert_eq!(app.overlays(), before);
+        assert_eq!(app.saved_content, baseline);
+        assert_eq!(app.selected_overlay_id(), Some(id));
+        assert_eq!(app.selected_widget_id(), Some(first));
+        assert_eq!(hub.snapshot(id).unwrap(), Some(before[0].clone()));
+        assert_eq!(receiver.borrow().revision(), revision);
+        assert!(!receiver.has_changed().unwrap());
     }
 
     #[test]

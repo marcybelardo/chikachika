@@ -334,16 +334,42 @@ impl From<&str> for TextWidget {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelError {
     EmptyName,
-    InvalidCanvasSize { width: u32, height: u32 },
-    InvalidPosition { x: f32, y: f32 },
-    InvalidFontSize { value: f32 },
-    InvalidOverlayId { id: OverlayId },
-    InvalidWidgetId { id: TextWidgetId },
-    DuplicateOverlayId { id: OverlayId },
-    DuplicateWidgetId { id: TextWidgetId },
-    UnknownFontFamily { value: String },
-    TextWidgetNotFound { id: TextWidgetId },
-    WidgetAlreadyExists { id: TextWidgetId },
+    InvalidCanvasSize {
+        width: u32,
+        height: u32,
+    },
+    InvalidPosition {
+        x: f32,
+        y: f32,
+    },
+    InvalidFontSize {
+        value: f32,
+    },
+    InvalidOverlayId {
+        id: OverlayId,
+    },
+    OverlayIdentityChanged {
+        expected: OverlayId,
+        found: OverlayId,
+    },
+    InvalidWidgetId {
+        id: TextWidgetId,
+    },
+    DuplicateOverlayId {
+        id: OverlayId,
+    },
+    DuplicateWidgetId {
+        id: TextWidgetId,
+    },
+    UnknownFontFamily {
+        value: String,
+    },
+    TextWidgetNotFound {
+        id: TextWidgetId,
+    },
+    WidgetAlreadyExists {
+        id: TextWidgetId,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -363,6 +389,12 @@ impl fmt::Display for ModelError {
                 "font size must be finite and greater than zero (got {value})"
             ),
             Self::InvalidOverlayId { id } => write!(f, "overlay ID {id} is not a non-nil UUID v4"),
+            Self::OverlayIdentityChanged { expected, found } => {
+                write!(
+                    f,
+                    "overlay mutation changed identity from {expected} to {found}"
+                )
+            }
             Self::InvalidWidgetId { id } => write!(f, "widget ID {id} is not a non-nil UUID v4"),
             Self::DuplicateOverlayId { id } => write!(f, "duplicate overlay ID {id}"),
             Self::DuplicateWidgetId { id } => write!(f, "duplicate widget ID {id}"),

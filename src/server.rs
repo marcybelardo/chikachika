@@ -537,24 +537,134 @@ mod tests {
     }
     #[tokio::test]
     async fn coordinator_multi_widget_live_sse() {
-        let hub = OverlayHub::new();
-        let initial = overlay();
-        let id = initial.id();
-        hub.register(initial.clone()).unwrap();
-        let response = response_for(
-            router_with_hub(hub.clone()),
-            &format!("/overlay/{id}/events"),
-        )
-        .await;
-        let mut body = response.into_body();
-        assert_eq!(
-            event_snapshot(&next_frame(&mut body).await.unwrap())["revision"],
-            0
+        let directory = tempfile::tempdir().unwrap();
+        let mut coordinator = crate::app::HeadlessCoordinator::empty(
+            crate::persistence::Store::at(directory.path().join("overlays.json")),
         );
-        let latest = changed(&initial, "Live");
-        hub.publish(&latest).unwrap();
-        let frame = next_frame(&mut body).await.unwrap();
-        assert_eq!(event_snapshot(&frame)["revision"], 1);
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        let hub = coordinator.hub();
+        let route = router_with_hub(hub.clone());
+        let response = response_for(route.clone(), &format!("/overlay/{overlay_id}/events")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+
+        let expect_current =
+            |coordinator: &crate::app::HeadlessCoordinator, overlay_id: OverlayId, frame: &[u8]| {
+                let revision = coordinator.hub().revision(overlay_id).unwrap().unwrap();
+                let expected = serde_json::to_value(browser::project(
+                    coordinator.overlay(overlay_id).unwrap(),
+                    revision,
+                ))
+                .unwrap();
+                assert_eq!(event_snapshot(frame), expected);
+            };
+
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut body).await.unwrap(),
+        );
+
+        let back_id = coordinator.add_widget(overlay_id, "back").unwrap();
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut body).await.unwrap(),
+        );
+        assert_eq!(
+            coordinator.overlay(overlay_id).unwrap().widgets()[0].id(),
+            back_id
+        );
+
+        coordinator
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_content(back_id, "edited <safe>")
+            })
+            .unwrap();
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut body).await.unwrap(),
+        );
+
+        let duplicate_id = coordinator.duplicate_widget(overlay_id, back_id).unwrap();
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut body).await.unwrap(),
+        );
+        assert_eq!(coordinator.selected_widget_id(), Some(duplicate_id));
+        assert_ne!(duplicate_id, back_id);
+
+        coordinator
+            .move_widget_backward(overlay_id, duplicate_id)
+            .unwrap();
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut body).await.unwrap(),
+        );
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(crate::model::TextWidget::id)
+                .collect::<Vec<_>>(),
+            vec![back_id, duplicate_id]
+        );
+
+        coordinator.delete_widget(overlay_id, duplicate_id).unwrap();
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut body).await.unwrap(),
+        );
+        assert_eq!(coordinator.selected_widget_id(), Some(back_id));
+        assert_eq!(coordinator.overlay(overlay_id).unwrap().widgets().len(), 1);
+
+        let reconnect = response_for(route.clone(), &format!("/overlay/{overlay_id}/events")).await;
+        let mut reconnect_body = reconnect.into_body();
+        expect_current(
+            &coordinator,
+            overlay_id,
+            &next_frame(&mut reconnect_body).await.unwrap(),
+        );
+
+        coordinator.delete_overlay(overlay_id, true).unwrap();
+        assert!(coordinator.overlays().is_empty());
+        assert!(hub.snapshot(overlay_id).unwrap().is_none());
+        let closed = tokio::time::timeout(Duration::from_secs(2), body.frame())
+            .await
+            .expect("deleted SSE stream did not close within the test bound");
+        assert!(
+            closed.is_none(),
+            "deleted SSE stream emitted a frame after closure"
+        );
+        assert_eq!(
+            response_for(route.clone(), &format!("/overlay/{overlay_id}"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            response_for(route.clone(), &format!("/overlay/{overlay_id}/events"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let post = route
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/overlay/{overlay_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
     #[tokio::test]
     async fn multi_widget_reconnect_and_bounded_latest() {
