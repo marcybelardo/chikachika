@@ -28,3 +28,15 @@ body {
   word-break: break-word;
   transform-origin: top left;
 }
+
+/*
+ * The browser adapter maps the stable model IDs to these installed-font
+ * fallbacks. Bundled offline faces are intentionally deferred to issue #26.
+ */
+[data-font-family="noto-sans"] {
+  font-family: "Noto Sans", sans-serif;
+}
+
+[data-font-family="jetbrains-mono"] {
+  font-family: "JetBrains Mono", monospace;
+}
