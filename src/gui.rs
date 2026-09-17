@@ -163,9 +163,10 @@ impl ChikachikaApp {
             ui.label(error);
             if let Some(source) = source {
                 ui.label(format!("Source: {source}"));
-                ui.label("Repair the source, then restart Chikachika. No replacement Save action is available here.");
+                ui.label("First copy the exact source file to a separate backup location. Then repair it or move it aside yourself, and restart Chikachika.");
+                ui.label("No replacement Save action is available here.");
             } else {
-                ui.label("No persistence path could be resolved. Fix the platform app-data configuration and restart Chikachika.");
+                ui.label("No persistence path could be resolved. Fix the platform app-data configuration yourself, then restart Chikachika.");
                 ui.label("No replacement Save action is available because no source path exists.");
             }
         });
@@ -642,13 +643,28 @@ fn render_selected_widget_inspector(
     }
 
     ui.label("Name");
-    ui.text_edit_singleline(&mut values.name);
+    let name_response = ui.add(
+        egui::TextEdit::singleline(&mut values.name).id(egui::Id::new((
+            "widget-name",
+            overlay_id,
+            values.id,
+        ))),
+    );
+    #[cfg(test)]
+    transient
+        .control_rects
+        .insert("Widget name".to_owned(), name_response.rect);
     ui.label("Content");
-    ui.add(
+    let content_response = ui.add(
         egui::TextEdit::multiline(&mut values.content)
+            .id(egui::Id::new(("widget-content", overlay_id, values.id)))
             .desired_rows(4)
             .desired_width(f32::INFINITY),
     );
+    #[cfg(test)]
+    transient
+        .control_rects
+        .insert("Widget content".to_owned(), content_response.rect);
     ui.horizontal(|ui| {
         ui.label("Font family");
         egui::ComboBox::from_id_salt(("font-family", overlay_id, values.id))
@@ -666,11 +682,15 @@ fn render_selected_widget_inspector(
                 );
             });
         ui.label("Font size");
-        ui.add(
+        let font_size_response = ui.add(
             egui::DragValue::new(&mut values.font_size)
                 .speed(0.5)
                 .suffix(" px"),
         );
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Font size".to_owned(), font_size_response.rect);
     });
     ui.horizontal(|ui| {
         ui.label("Color");
@@ -693,18 +713,39 @@ fn render_selected_widget_inspector(
     });
     ui.horizontal(|ui| {
         ui.label("Alignment");
-        ui.selectable_value(&mut values.alignment, Alignment::Left, "Left");
-        ui.selectable_value(&mut values.alignment, Alignment::Center, "Center");
-        ui.selectable_value(&mut values.alignment, Alignment::Right, "Right");
+        let left = ui.selectable_value(&mut values.alignment, Alignment::Left, "Left");
+        let center = ui.selectable_value(&mut values.alignment, Alignment::Center, "Center");
+        let right = ui.selectable_value(&mut values.alignment, Alignment::Right, "Right");
+        #[cfg(test)]
+        {
+            transient
+                .control_rects
+                .insert("Alignment Left".to_owned(), left.rect);
+            transient
+                .control_rects
+                .insert("Alignment Center".to_owned(), center.rect);
+            transient
+                .control_rects
+                .insert("Alignment Right".to_owned(), right.rect);
+        }
     });
     ui.horizontal(|ui| {
         ui.label("Position");
         let mut x = values.position.x();
         let mut y = values.position.y();
         ui.label("X");
-        ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
+        let x_response = ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
         ui.label("Y");
-        ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
+        let y_response = ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
+        #[cfg(test)]
+        {
+            transient
+                .control_rects
+                .insert("Position X".to_owned(), x_response.rect);
+            transient
+                .control_rects
+                .insert("Position Y".to_owned(), y_response.rect);
+        }
         values.position = Position::new(
             x.clamp(0.0, canvas.width() as f32),
             y.clamp(0.0, canvas.height() as f32),
@@ -909,7 +950,12 @@ fn render_canvas_preview(
             egui::Sense::drag(),
         );
 
-        if response.drag_started()
+        // Capture the grab offset on the press, before egui's drag threshold is
+        // crossed. Once a real drag starts the pointer may be outside the
+        // original hitbox, so checking `hitbox.contains` at `drag_started()`
+        // would reject every genuine drag.
+        if response.is_pointer_button_down_on()
+            && drag.is_none()
             && let Some(pointer) = response.interact_pointer_pos()
             && hitbox.contains(pointer)
         {
@@ -1174,7 +1220,10 @@ fn render_settings(
                     format!("Settings error: {error}"),
                 );
                 ui.label(
-                    "Repair or remove the settings source, then restart Chikachika. No fallback port is used while settings are invalid.",
+                    "First copy the exact settings source to a separate backup location. Then repair it or move it aside yourself, and restart Chikachika.",
+                );
+                ui.label(
+                    "No fallback port is used while settings are invalid.",
                 );
             }
             ui.horizontal(|ui| {
@@ -1240,9 +1289,10 @@ fn append_settings_labels(
     }
     if let Some(error) = settings.settings_error() {
         visible.push(format!("Settings error: {error}"));
-        visible.push(
-            "Repair or remove the settings source, then restart Chikachika. No fallback port is used while settings are invalid.".to_owned(),
-        );
+        visible.extend([
+            "First copy the exact settings source to a separate backup location. Then repair it or move it aside yourself, and restart Chikachika.".to_owned(),
+            "No fallback port is used while settings are invalid.".to_owned(),
+        ]);
     }
     visible.extend([
         "Port for next launch (1–65535)".to_owned(),
@@ -1520,13 +1570,49 @@ impl ScenarioHarness {
 
     /// Sends a real egui key event.
     pub fn key(&mut self, key: egui::Key, pressed: bool) {
+        self.key_with_modifiers(key, pressed, egui::Modifiers::default());
+    }
+
+    /// Sends a real egui key event with explicit modifiers.
+    pub fn key_with_modifiers(
+        &mut self,
+        key: egui::Key,
+        pressed: bool,
+        modifiers: egui::Modifiers,
+    ) {
         self.event(egui::Event::Key {
             key,
             physical_key: None,
             pressed,
             repeat: false,
-            modifiers: egui::Modifiers::default(),
+            modifiers,
         });
+    }
+
+    /// Clicks a rendered control using its actual rectangle.
+    pub fn pointer_click_control(&mut self, label: &str) -> Result<(), String> {
+        let rect = self
+            .control_rect(label)
+            .ok_or_else(|| format!("control rectangle is unavailable: {label}"))?;
+        self.pointer_click(rect.center());
+        Ok(())
+    }
+
+    /// Replaces a rendered text control using focus, select-all, and text input events.
+    pub fn replace_text_control(&mut self, label: &str, text: &str) -> Result<(), String> {
+        self.pointer_click_control(label)?;
+        self.key_with_modifiers(egui::Key::A, true, egui::Modifiers::COMMAND);
+        self.event(egui::Event::Text(text.to_owned()));
+        Ok(())
+    }
+
+    /// Replaces a rendered numeric control using its real focused text editor.
+    pub fn replace_number_control(&mut self, label: &str, text: &str) -> Result<(), String> {
+        self.pointer_click_control(label)?;
+        self.key_with_modifiers(egui::Key::A, true, egui::Modifiers::COMMAND);
+        self.event(egui::Event::Text(text.to_owned()));
+        self.key(egui::Key::Enter, true);
+        Ok(())
     }
 
     /// Returns the actual shapes emitted by the last frame.
@@ -1615,7 +1701,26 @@ impl ScenarioHarness {
     /// Returns whether the current rendered state exposes the requested label.
     pub fn has_label(&self, label: &str) -> bool {
         if let Some(failure) = self.app.blocked.as_ref() {
-            return failure.error().to_string().contains(label);
+            let mut visible = vec![
+                "Chikachika cannot open this workspace".to_owned(),
+                "Startup is blocked".to_owned(),
+                "The saved overlay source was not changed.".to_owned(),
+                failure.error().to_string(),
+            ];
+            if failure.store().is_some() {
+                visible.extend([
+                    "First copy the exact source file to a separate backup location. Then repair it or move it aside yourself, and restart Chikachika.".to_owned(),
+                    "No replacement Save action is available here.".to_owned(),
+                ]);
+            } else {
+                visible.extend([
+                    "No persistence path could be resolved. Fix the platform app-data configuration yourself, then restart Chikachika.".to_owned(),
+                    "No replacement Save action is available because no source path exists.".to_owned(),
+                ]);
+            }
+            return visible
+                .into_iter()
+                .any(|text| text == label || text.contains(label));
         }
         let Some(coordinator) = self.app.coordinator.as_ref() else {
             return false;
@@ -1665,6 +1770,7 @@ impl ScenarioHarness {
                     widget.name().to_owned(),
                     "Widget inspector".to_owned(),
                     "Stable widget identity".to_owned(),
+                    format!("Stable widget identity: {}", widget.id()),
                     "Duplicate".to_owned(),
                     "Delete widget".to_owned(),
                     "Forward".to_owned(),
@@ -1787,6 +1893,28 @@ mod tests {
     }
 
     #[test]
+    fn blocked_startup_shows_backup_first_recovery_guidance() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source_path = directory.path().join("overlays.json");
+        std::fs::write(&source_path, b"not json").expect("write malformed overlay source");
+        let outcome = HeadlessCoordinator::bootstrap_outcome(Store::at(&source_path));
+        let BootstrapOutcome::Blocked(_) = outcome else {
+            panic!("malformed overlay source should block startup");
+        };
+        let mut harness = ScenarioHarness::new(outcome);
+        harness.frame();
+        assert!(harness.has_label("Chikachika cannot open this workspace"));
+        assert!(harness.has_label("The saved overlay source was not changed."));
+        assert!(
+            harness.has_label("First copy the exact source file to a separate backup location.")
+        );
+        assert!(
+            harness.has_label("Then repair it or move it aside yourself, and restart Chikachika.")
+        );
+        assert!(!harness.has_label("remove the source"));
+    }
+
+    #[test]
     fn settings_controls_show_port_path_and_restart_semantics() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let settings_path = directory.path().join("settings.json");
@@ -1896,8 +2024,15 @@ mod tests {
 
         assert!(harness.has_label("Current configured port: unavailable"));
         assert!(harness.has_label("Settings error:"));
-        assert!(harness.has_label("Repair or remove the settings source"));
+        assert!(
+            harness
+                .has_label("First copy the exact settings source to a separate backup location.")
+        );
+        assert!(
+            harness.has_label("Then repair it or move it aside yourself, and restart Chikachika.")
+        );
         assert!(harness.has_label("No fallback port is used while settings are invalid."));
+        assert!(!harness.has_label("remove the settings source"));
 
         harness.set_port_field("4001");
         harness
@@ -2085,30 +2220,61 @@ mod tests {
             harness.app().coordinator().unwrap().selected_widget_id(),
             Some(ids[1])
         );
-
-        let add_rect = harness.control_rect("Add text widget").expect("Add shape");
-        harness.pointer_click(add_rect.center());
-        let coordinator = harness.app().coordinator().unwrap();
-        assert_eq!(coordinator.overlay(overlay_id).unwrap().widgets().len(), 4);
-        let inserted = coordinator.selected_widget_id().expect("new selection");
-        assert_ne!(inserted, ids[1]);
-
-        let duplicate_rect = harness.control_rect("Duplicate").expect("Duplicate shape");
-        harness.pointer_click(duplicate_rect.center());
-        let coordinator = harness.app().coordinator().unwrap();
-        assert_eq!(coordinator.overlay(overlay_id).unwrap().widgets().len(), 5);
         assert_eq!(
-            coordinator.overlay(overlay_id).unwrap().widgets()[0].id(),
-            coordinator.selected_widget_id().unwrap()
+            harness.app().transient.inspector_target,
+            Some((overlay_id, ids[1]))
         );
 
-        let delete_rect = harness.control_rect("Delete widget").expect("Delete shape");
-        harness.pointer_move(delete_rect.center());
-        let delete_rect = harness
-            .control_rect("Delete widget")
-            .expect("Delete shape after pointer move");
-        harness.pointer_button(delete_rect.center(), true);
-        harness.pointer_button(delete_rect.center(), false);
+        // Replace inspector values through the focused controls, not through
+        // coordinator or transient-state shortcuts.
+        harness
+            .replace_text_control("Widget name", "Edited middle")
+            .expect("edit widget name through egui input");
+        harness
+            .replace_text_control("Widget content", "Edited body")
+            .expect("edit widget content through egui input");
+        harness
+            .replace_number_control("Font size", "42")
+            .expect("edit font size through egui input");
+        harness
+            .replace_number_control("Position X", "123")
+            .expect("edit position through egui input");
+        harness
+            .pointer_click_control("Alignment Center")
+            .expect("edit alignment through egui pointer input");
+
+        let coordinator = harness.app().coordinator().unwrap();
+        let overlay = coordinator.overlay(overlay_id).unwrap();
+        assert_eq!(
+            overlay
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(overlay.widget(ids[0]).unwrap().name(), "Front");
+        assert_eq!(overlay.widget(ids[2]).unwrap().name(), "Back");
+        assert_eq!(overlay.widget(ids[1]).unwrap().name(), "Edited middle");
+        assert_eq!(overlay.widget(ids[1]).unwrap().content(), "Edited body");
+        assert_eq!(overlay.widget(ids[1]).unwrap().font_size(), 42.0);
+        assert_eq!(
+            overlay.widget(ids[1]).unwrap().position(),
+            Position::new(123.0, 0.0)
+        );
+        assert_eq!(
+            overlay.widget(ids[1]).unwrap().alignment(),
+            Alignment::Center
+        );
+        assert_eq!(coordinator.selected_widget_id(), Some(ids[1]));
+        assert_eq!(
+            harness.app().transient.inspector_target,
+            Some((overlay_id, ids[1]))
+        );
+
+        harness
+            .pointer_click_control("Forward")
+            .expect("move selected widget forward through egui pointer input");
         assert_eq!(
             harness
                 .app()
@@ -2117,8 +2283,150 @@ mod tests {
                 .overlay(overlay_id)
                 .unwrap()
                 .widgets()
-                .len(),
-            4
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            vec![ids[1], ids[0], ids[2]]
+        );
+        harness
+            .pointer_click_control("Backward")
+            .expect("move selected widget backward through egui pointer input");
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+
+        harness
+            .pointer_click_control("Add text widget")
+            .expect("create widget through egui pointer input");
+        let inserted = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .selected_widget_id()
+            .expect("new widget selection");
+        assert!(!ids.contains(&inserted));
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            vec![inserted, ids[0], ids[1], ids[2]]
+        );
+
+        harness
+            .pointer_click_control("Duplicate")
+            .expect("duplicate widget through egui pointer input");
+        let duplicated = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .selected_widget_id()
+            .expect("duplicated widget selection");
+        assert_ne!(duplicated, inserted);
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            vec![duplicated, inserted, ids[0], ids[1], ids[2]]
+        );
+        assert!(harness.has_label(&format!("Stable widget identity: {duplicated}")));
+        harness.frame();
+
+        harness
+            .pointer_click_control("Delete widget")
+            .expect("delete duplicated widget through egui pointer input");
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            vec![inserted, ids[0], ids[1], ids[2]]
+        );
+        harness.frame();
+        let inserted_rect = harness
+            .widget_selector_rect(inserted)
+            .expect("inserted selector row after duplicate deletion");
+        harness.pointer_click(inserted_rect.center());
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(inserted)
+        );
+        harness
+            .pointer_click_control("Delete widget")
+            .expect("delete inserted widget through egui pointer input");
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[0])
+        );
+
+        let preview_rect = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("actual preview canvas shape");
+        let preview_texts: Vec<String> = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if preview_rect.contains(text.pos)
+                        || preview_rect.contains(text.pos + egui::vec2(1.0, 1.0)) =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .filter(|text| matches!(text.as_str(), "Back" | "Edited body" | "Front"))
+            .collect();
+        assert_eq!(
+            preview_texts,
+            vec![
+                "Back".to_owned(),
+                "Edited body".to_owned(),
+                "Front".to_owned()
+            ]
         );
     }
 
@@ -2167,32 +2475,101 @@ mod tests {
 
     #[test]
     fn selection_change_clears_stale_drag() {
-        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
-        let (_overlay_id, ids) = setup_widgets(&mut harness);
+        let mut harness = ScenarioHarness::new_with_size(
+            BootstrapOutcome::Ready(ready_app()),
+            egui::vec2(960.0, 1_200.0),
+        );
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        {
+            let coordinator = harness.app_mut().coordinator_mut().unwrap();
+            coordinator
+                .update_overlay(overlay_id, |overlay| {
+                    overlay.set_widget_position(ids[0], Position::new(40.0, 30.0))?;
+                    overlay.set_widget_position(ids[1], Position::new(180.0, 90.0))
+                })
+                .unwrap();
+        }
         harness.frame();
-        harness.app_mut().transient.preview_drag = Some(PreviewDrag {
-            overlay_id: harness
+        let preview_rect = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("actual preview canvas shape");
+        let scale = preview_scale(
+            crate::model::CanvasSize::new(320, 240).unwrap(),
+            preview_rect.width(),
+        );
+        let origin = canvas_to_preview(preview_rect.min, Position::new(40.0, 30.0), scale);
+        let hitbox = harness
+            .control_rect("Canvas preview")
+            .expect("selected widget preview hitbox");
+        let grab = hitbox.min + egui::vec2(3.0, 4.0);
+        let moved_pointer = grab + egui::vec2(50.0, 35.0);
+        harness.pointer_move(grab);
+        harness.pointer_button(grab, true);
+        assert!(harness.app().transient.preview_drag.is_some());
+        harness.pointer_move(moved_pointer);
+        assert!(harness.app().transient.preview_drag.is_some());
+        assert_eq!(
+            harness.app().transient.preview_drag.unwrap().pointer_offset,
+            grab - origin
+        );
+        assert_eq!(
+            harness
                 .app()
                 .coordinator()
                 .unwrap()
-                .selected_overlay_id()
-                .unwrap(),
-            widget_id: ids[0],
-            pointer_offset: egui::vec2(7.0, 9.0),
-        });
-        harness
-            .app_mut()
-            .coordinator_mut()
-            .unwrap()
-            .select_widget(ids[1])
-            .unwrap();
-        harness.key(egui::Key::Escape, true);
-        harness.frame();
-        assert!(harness.app().transient.preview_drag.is_none());
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .position(),
+            preview_to_canvas(
+                preview_rect.min,
+                moved_pointer,
+                grab - origin,
+                scale,
+                crate::model::CanvasSize::new(320, 240).unwrap()
+            )
+        );
+
+        // The selector click changes the authoritative target while the pointer
+        // remains down; the next frame must not apply the old drag to ids[1].
+        let second_rect = harness
+            .widget_selector_rect(ids[1])
+            .expect("second selector row shape");
+        harness.pointer_move(second_rect.center());
+        harness.pointer_button(second_rect.center(), true);
+        harness.pointer_button(second_rect.center(), false);
         assert_eq!(
             harness.app().coordinator().unwrap().selected_widget_id(),
             Some(ids[1])
         );
+        assert!(harness.app().transient.preview_drag.is_none());
+        let position_after_selection = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[1])
+            .unwrap()
+            .position();
+        harness.pointer_move(egui::pos2(-500.0, -500.0));
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[1])
+                .unwrap()
+                .position(),
+            position_after_selection
+        );
+        harness.pointer_button(moved_pointer, false);
+        assert!(harness.app().transient.preview_drag.is_none());
     }
 
     #[test]
