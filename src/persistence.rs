@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn invalid_collection_load_preserves_source() {
         let d = tempfile::tempdir().unwrap();
-        for source in [br#"{"format_version":2,"overlays":[]}"#.to_vec(), br#"{"format_version":2,"overlays":[{"id":"00000000-0000-0000-0000-000000000000","name":"x","canvas":{"width":1,"height":1},"widgets":[] }]}"#.to_vec(), br#"{"format_version":2,"overlays":[{"id":"00000000-0000-4000-8000-000000000001","name":"x","canvas":{"width":1,"height":1},"widgets":[{"id":"00000000-0000-4000-8000-000000000002","name":"x","content":"x","font_family":"bad","position":{"x":0.0,"y":0.0},"font_size":16.0,"color":{"red":0,"green":0,"blue":0,"alpha":255},"alignment":"left"}]}]}"#.to_vec()] {
+        for source in [br#"{"format_version":2,"overlays":[{"id":"00000000-0000-0000-0000-000000000000","name":"x","canvas":{"width":1,"height":1},"widgets":[] }]}"#.to_vec(), br#"{"format_version":2,"overlays":[{"id":"00000000-0000-4000-8000-000000000001","name":"x","canvas":{"width":1,"height":1},"widgets":[{"id":"00000000-0000-4000-8000-000000000002","name":"x","content":"x","font_family":"bad","position":{"x":0.0,"y":0.0},"font_size":16.0,"color":{"red":0,"green":0,"blue":0,"alpha":255},"alignment":"left"}]}]}"#.to_vec()] {
             let path = d.path().join("invalid.json"); fs::write(&path, &source).unwrap(); let result = Store::at(&path).load(); assert!(result.is_err()); assert_eq!(fs::read(&path).unwrap(), source); fs::remove_file(&path).unwrap();
         }
     }

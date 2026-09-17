@@ -250,7 +250,7 @@ impl TextWidget {
     ) -> Result<Self, ModelError> {
         let name = name.into();
         let content = content.into();
-        validate_name(&name).map_err(|_| ModelError::EmptyWidgetName)?;
+        validate_name(&name)?;
         validate_position(position)?;
         validate_font_size(font_size)?;
         Ok(Self {
@@ -278,7 +278,7 @@ impl TextWidget {
         if !id.is_valid() {
             return Err(ModelError::InvalidWidgetId { id });
         }
-        validate_name(&name).map_err(|_| ModelError::EmptyWidgetName)?;
+        validate_name(&name)?;
         validate_position(position)?;
         validate_font_size(font_size)?;
         Ok(Self {
@@ -334,7 +334,6 @@ impl From<&str> for TextWidget {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelError {
     EmptyName,
-    EmptyWidgetName,
     InvalidCanvasSize { width: u32, height: u32 },
     InvalidPosition { x: f32, y: f32 },
     InvalidFontSize { value: f32 },
@@ -344,7 +343,6 @@ pub enum ModelError {
     DuplicateWidgetId { id: TextWidgetId },
     UnknownFontFamily { value: String },
     TextWidgetNotFound { id: TextWidgetId },
-    WidgetNameNotFound { id: TextWidgetId },
     WidgetAlreadyExists { id: TextWidgetId },
 }
 
@@ -352,7 +350,6 @@ impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyName => write!(f, "overlay name cannot be empty"),
-            Self::EmptyWidgetName => write!(f, "widget name cannot be empty"),
             Self::InvalidCanvasSize { width, height } => write!(
                 f,
                 "canvas dimensions must be non-zero (got {width}x{height})"
@@ -371,7 +368,6 @@ impl fmt::Display for ModelError {
             Self::DuplicateWidgetId { id } => write!(f, "duplicate widget ID {id}"),
             Self::UnknownFontFamily { value } => write!(f, "unknown font family {value}"),
             Self::TextWidgetNotFound { id } => write!(f, "text widget {id} was not found"),
-            Self::WidgetNameNotFound { id } => write!(f, "text widget {id} was not found"),
             Self::WidgetAlreadyExists { id } => write!(f, "text widget {id} already exists"),
         }
     }
@@ -610,7 +606,7 @@ pub(crate) fn validate_collection(overlays: &[Overlay]) -> Result<(), ModelError
             }
             validate_widget_position(overlay.canvas(), widget.position())?;
             validate_font_size(widget.font_size())?;
-            validate_name(widget.name()).map_err(|_| ModelError::EmptyWidgetName)?;
+            validate_name(widget.name())?;
         }
     }
     Ok(())
