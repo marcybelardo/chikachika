@@ -2,7 +2,7 @@
 
 This file is the root context and navigation entry point for contributors and coding agents. More specific `AGENTS.md` files may be added later; when present, they govern their directory subtree and must be listed here.
 
-> **Status:** The `0.0.1` vertical-slice milestone is complete; the issue22 ordered-widget/format-2 checkpoint is implemented in the current source branch, while release publication and the remaining `0.0.2` work are pending.
+> **Status:** The `0.0.1` vertical-slice milestone is complete; issue22's ordered-widget/format-2 checkpoint and issue23's three-panel workspace implementation are present in the current source branch. Headless GUI tests cover the issue23 interaction and geometry contracts. Corrected-build review confirmed contrast and layout at 1280×800 and layout at 1024×640; direct canvas-click inspector feedback still needs follow-up. Release publication and the remaining `0.0.2` work are also pending.
 
 ## Context Map
 
@@ -44,7 +44,7 @@ This file is the root context and navigation entry point for contributors and co
 
 ## Project Status
 
-The `0.0.1` vertical-slice milestone is complete. The current source branch also contains the issue22 ordered multi-widget model, coordinator selection/baseline behavior, format-2 overlay persistence, native editor controls, and complete browser `widgets`-array ID reconciliation. Release publication has not yet been recorded, and the remaining `0.0.2` work is tracked in [`docs/TODO-0-0-2.md`](docs/TODO-0-0-2.md). Completed `0.0.1` requirements and evidence remain tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
+The `0.0.1` vertical-slice milestone is complete. The current source branch contains the issue22 ordered multi-widget model, coordinator selection/baseline behavior, format-2 overlay persistence, and complete browser `widgets`-array ID reconciliation, plus the issue23 three-panel workspace and shared list/canvas/inspector selection. The workspace starts at 1280×800 logical pixels, has a 1024×640 minimum, and uses resizable sidebars around an aspect-preserving fitted canvas. Headless GUI tests cover pointer selection, supported menus, readiness-gated URL actions, and canvas geometry at the documented sizes. Corrected-build review confirmed contrast and layout at 1280×800 and layout at 1024×640. Manual QA found direct canvas clicks did not visibly switch the inspector; that follow-up remains open. Release publication has not yet been recorded, and the remaining `0.0.2` work is tracked in [`docs/TODO-0-0-2.md`](docs/TODO-0-0-2.md). Completed `0.0.1` requirements and evidence remain tracked in [`docs/TODO-0-0-1.md`](docs/TODO-0-0-1.md).
 
 Until `0.0.1` is released, the architecture and implementation may change substantially. There are no compatibility or migration guarantees for unreleased code or data. Agents should change, replace, or remove existing code and structure when doing so produces a simpler, clearer, more functional product. Preserve an earlier approach only when it remains the best current choice, not merely because it already exists.
 
