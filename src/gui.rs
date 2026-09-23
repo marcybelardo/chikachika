@@ -14,6 +14,15 @@ use crate::app::{ApplicationBootstrap, BootstrapOutcome, HeadlessCoordinator};
 use crate::model::{Alignment, Color, FontFamily, OverlayId, Position, TextWidget, TextWidgetId};
 use crate::settings::{MAX_PORT, MIN_PORT, Settings, SettingsState, Store as SettingsStore};
 
+const WINDOW_INITIAL_SIZE: [f32; 2] = [1280.0, 800.0];
+const WINDOW_MINIMUM_SIZE: [f32; 2] = [1024.0, 640.0];
+const WIDGET_LIST_INITIAL_WIDTH: f32 = 220.0;
+const WIDGET_LIST_MINIMUM_WIDTH: f32 = 180.0;
+const INSPECTOR_INITIAL_WIDTH: f32 = 280.0;
+const INSPECTOR_MINIMUM_WIDTH: f32 = 260.0;
+const USER_DOCUMENTATION_URL: &str =
+    "https://github.com/marcybelardo/chikachika/blob/main/docs/user/README.md";
+
 #[derive(Default)]
 struct TransientState {
     create_open: bool,
@@ -30,15 +39,23 @@ struct TransientState {
     /// separate from the coordinator makes it possible to discard stale UI
     /// state immediately when a selection or overlay changes.
     inspector_target: Option<(OverlayId, TextWidgetId)>,
+    name_focus_target: Option<(OverlayId, TextWidgetId)>,
     settings_port_input: String,
     settings_save_error: Option<String>,
     settings_save_succeeded: bool,
+    settings_expanded: bool,
     #[cfg(test)]
     widget_selector_rects: HashMap<TextWidgetId, egui::Rect>,
     #[cfg(test)]
     control_rects: HashMap<String, egui::Rect>,
     #[cfg(test)]
     preview_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    name_field_focused: bool,
+    #[cfg(test)]
+    widget_panel_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    inspector_panel_rect: Option<egui::Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -233,7 +250,7 @@ impl ChikachikaApp {
     #[cfg(test)]
     fn activate(&mut self, label: &str) -> Result<(), String> {
         match label {
-            "Create overlay" => {
+            "Create overlay" | "Create Overlay" => {
                 self.open_create();
                 Ok(())
             }
@@ -248,13 +265,15 @@ impl ChikachikaApp {
             "Confirm delete" => self.confirm_delete(),
             "Save" => self.save_workspace(),
             "Save port for next launch" | "Save port" => self.save_settings_port(),
-            "Add text widget" | "Add" => {
+            "Add text widget" | "Add" | "Add Text" => {
                 add_selected_text_widget(self.coordinator.as_mut()).map(|_| ())
             }
-            "Remove text widget" | "Delete widget" => {
+            "Remove text widget" | "Delete widget" | "Edit/Delete" => {
                 remove_selected_text_widget(self.coordinator.as_mut())
             }
             "Duplicate" => duplicate_selected_text_widget(self.coordinator.as_mut()).map(|_| ()),
+
+            "Fit Canvas" => Ok(()),
 
             "Forward" => move_selected_text_widget(self.coordinator.as_mut(), true),
             "Backward" => move_selected_text_widget(self.coordinator.as_mut(), false),
@@ -263,6 +282,7 @@ impl ChikachikaApp {
     }
 
     fn render_workspace(&mut self, context: &egui::Context) {
+        context.set_visuals(egui::Visuals::dark());
         let coordinator = self
             .coordinator
             .as_mut()
@@ -277,114 +297,360 @@ impl ChikachikaApp {
             transient.inspector_target = target;
         }
 
-        egui::TopBottomPanel::top("status").show(context, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("Chikachika overlay workspace");
-                ui.separator();
-                if coordinator.is_dirty() {
-                    ui.colored_label(egui::Color32::from_rgb(239, 108, 0), "Unsaved changes");
-                } else {
-                    ui.colored_label(egui::Color32::from_rgb(46, 125, 50), "Saved");
-                }
-                if coordinator.is_dirty() && ui.button("Save").clicked() {
-                    let _ = save_workspace(Some(coordinator));
-                }
-                if let Some(error) = coordinator.last_error() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(183, 28, 28),
-                        format!("Error: {error}"),
+        egui::TopBottomPanel::top("menu-bar").show(context, |ui| {
+            ui.horizontal(|ui| {
+                let file = ui.menu_button("File", |ui| {
+                    let create = ui.button("Create Overlay");
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("File/Create Overlay".to_owned(), create.rect);
+                    if create.clicked() {
+                        begin_create(transient);
+                        ui.close_menu();
+                    }
+                    let save = ui.add_enabled(coordinator.is_dirty(), egui::Button::new("Save"));
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("File/Save".to_owned(), save.rect);
+                    if save.clicked() {
+                        let _ = save_workspace(Some(coordinator));
+                        ui.close_menu();
+                    }
+                });
+                let edit = ui.menu_button("Edit", |ui| {
+                    let can_edit_overlay = coordinator.selected_overlay_id().is_some();
+                    let can_edit_widget = coordinator.selected_widget_id().is_some();
+                    let add = ui.add_enabled(can_edit_overlay, egui::Button::new("Add Text"));
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Edit/Add Text".to_owned(), add.rect);
+                    if add.clicked() {
+                        let _ = add_selected_text_widget(Some(coordinator));
+                        clear_inspector_state(transient);
+                        transient.inspector_target = coordinator
+                            .selected_overlay_id()
+                            .zip(coordinator.selected_widget_id());
+                        ui.close_menu();
+                    }
+                    let duplicate = ui.add_enabled(can_edit_widget, egui::Button::new("Duplicate"));
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Edit/Duplicate".to_owned(), duplicate.rect);
+                    if duplicate.clicked() {
+                        let _ = duplicate_selected_text_widget(Some(coordinator));
+                        clear_inspector_state(transient);
+                        transient.inspector_target = coordinator
+                            .selected_overlay_id()
+                            .zip(coordinator.selected_widget_id());
+                        ui.close_menu();
+                    }
+                    let delete = ui.add_enabled(can_edit_widget, egui::Button::new("Delete"));
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Edit/Delete".to_owned(), delete.rect);
+                    if delete.clicked() {
+                        let _ = remove_selected_text_widget(Some(coordinator));
+                        clear_inspector_state(transient);
+                        transient.inspector_target = coordinator
+                            .selected_overlay_id()
+                            .zip(coordinator.selected_widget_id());
+                        ui.close_menu();
+                    }
+                    let selected_index = coordinator.selected_widget().and_then(|widget| {
+                        coordinator
+                            .selected_overlay()?
+                            .widgets()
+                            .iter()
+                            .position(|item| item.id() == widget.id())
+                    });
+                    let count = coordinator
+                        .selected_overlay()
+                        .map_or(0, |overlay| overlay.widgets().len());
+                    let forward = ui.add_enabled(
+                        selected_index.is_some_and(|index| index > 0),
+                        egui::Button::new("Forward"),
                     );
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Edit/Forward".to_owned(), forward.rect);
+                    if forward.clicked() {
+                        let _ = move_selected_text_widget(Some(coordinator), true);
+                        ui.close_menu();
+                    }
+                    let backward = ui.add_enabled(
+                        selected_index.is_some_and(|index| index + 1 < count),
+                        egui::Button::new("Backward"),
+                    );
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Edit/Backward".to_owned(), backward.rect);
+                    if backward.clicked() {
+                        let _ = move_selected_text_widget(Some(coordinator), false);
+                        ui.close_menu();
+                    }
+                });
+                let view = ui.menu_button("View", |ui| {
+                    let fit = ui.button("Fit Canvas");
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("View/Fit Canvas".to_owned(), fit.rect);
+                    if fit.clicked() {
+                        context.request_repaint();
+                        ui.close_menu();
+                    }
+                });
+                let help = ui.menu_button("Help", |ui| {
+                    let documentation = ui.button("User Documentation");
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Help/User Documentation".to_owned(), documentation.rect);
+                    if documentation.clicked() {
+                        open_url(context, USER_DOCUMENTATION_URL);
+                        ui.close_menu();
+                    }
+                });
+                #[cfg(test)]
+                {
+                    transient
+                        .control_rects
+                        .insert("File menu".to_owned(), file.response.rect);
+                    transient
+                        .control_rects
+                        .insert("Edit menu".to_owned(), edit.response.rect);
+                    transient
+                        .control_rects
+                        .insert("View menu".to_owned(), view.response.rect);
+                    transient
+                        .control_rects
+                        .insert("Help menu".to_owned(), help.response.rect);
                 }
             });
         });
 
-        render_settings(context, &mut self.settings, transient, Some(&*coordinator));
-
-        egui::SidePanel::left("overlay-list")
-            .resizable(true)
-            .default_width(230.0)
-            .show(context, |ui| {
-                ui.heading("Overlays");
-                ui.add_space(4.0);
-                if ui.button("Create overlay").clicked() {
+        egui::TopBottomPanel::top("overlay-switcher").show(context, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Overlay");
+                let overlays: Vec<(OverlayId, String)> = coordinator
+                    .overlays()
+                    .iter()
+                    .map(|overlay| (overlay.id(), overlay.name().to_owned()))
+                    .collect();
+                let selected = coordinator.selected_overlay_id();
+                let selected_name = coordinator
+                    .selected_overlay()
+                    .map(|overlay| overlay.name())
+                    .unwrap_or("Select an overlay");
+                egui::ComboBox::from_id_salt("overlay-switcher")
+                    .selected_text(selected_name)
+                    .show_ui(ui, |ui| {
+                        for (id, name) in overlays {
+                            if ui.selectable_label(selected == Some(id), name).clicked() {
+                                let _ = select_overlay(coordinator, id);
+                                clear_inspector_state(transient);
+                                transient.inspector_target = None;
+                            }
+                        }
+                    });
+                let create = ui.button("Create overlay");
+                #[cfg(test)]
+                transient
+                    .control_rects
+                    .insert("Create overlay".to_owned(), create.rect);
+                if create.clicked() {
                     begin_create(transient);
                 }
-                ui.separator();
-                if coordinator.overlays().is_empty() {
-                    ui.label("No overlays yet.");
-                    ui.label("Create one to begin a local browser source workspace.");
-                } else {
-                    let selected = coordinator.selected_overlay_id();
-                    let overlay_rows: Vec<(OverlayId, String)> = coordinator
-                        .overlays()
-                        .iter()
-                        .map(|overlay| (overlay.id(), overlay.name().to_owned()))
-                        .collect();
-                    for (id, name) in overlay_rows {
-                        let is_selected = selected == Some(id);
-                        let label = if is_selected {
-                            format!("✓ {name}")
-                        } else {
-                            name
-                        };
-                        if ui.selectable_label(is_selected, label).clicked() {
-                            let _ = select_overlay(coordinator, id);
-                            clear_inspector_state(transient);
-                            transient.inspector_target = None;
-                        }
+                let has_overlay = coordinator.selected_overlay_id().is_some();
+                let rename = ui.add_enabled(has_overlay, egui::Button::new("Rename"));
+                #[cfg(test)]
+                transient
+                    .control_rects
+                    .insert("Rename".to_owned(), rename.rect);
+                if rename.clicked() {
+                    let _ = begin_rename(coordinator, transient);
+                }
+                let delete = ui.add_enabled(has_overlay, egui::Button::new("Delete"));
+                #[cfg(test)]
+                transient
+                    .control_rects
+                    .insert("Delete".to_owned(), delete.rect);
+                if delete.clicked() {
+                    let _ = begin_delete(coordinator, transient);
+                }
+                if let Some(overlay) = coordinator.selected_overlay() {
+                    ui.separator();
+                    ui.label(format!(
+                        "{} × {}",
+                        overlay.canvas().width(),
+                        overlay.canvas().height()
+                    ));
+                }
+            });
+        });
+
+        egui::TopBottomPanel::bottom("workspace-status").show(context, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if coordinator.is_dirty() {
+                    ui.colored_label(egui::Color32::from_rgb(255, 183, 77), "Unsaved changes");
+                    let save = ui.button("Save");
+                    #[cfg(test)]
+                    transient.control_rects.insert("Save".to_owned(), save.rect);
+                    if save.clicked() {
+                        let _ = save_workspace(Some(coordinator));
                     }
+                } else {
+                    ui.colored_label(egui::Color32::from_rgb(129, 199, 132), "Saved");
+                }
+                ui.separator();
+                if let Some(address) = coordinator.server_address() {
+                    ui.label(format!("Server running · port {}", address.port()));
+                } else {
+                    ui.label("Server unavailable");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let url = coordinator.selected_url();
+                    let open = ui.add_enabled(url.is_some(), egui::Button::new("Open output"));
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Open output".to_owned(), open.rect);
+                    if open.clicked()
+                        && let Some(url) = url.as_deref()
+                    {
+                        open_url(ui.ctx(), url);
+                    }
+                    let copy = ui.add_enabled(url.is_some(), egui::Button::new("Copy URL"));
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("Copy URL".to_owned(), copy.rect);
+                    if copy.clicked()
+                        && let Some(url) = url.as_deref()
+                    {
+                        copy_url(ui.ctx(), url);
+                    }
+                });
+            });
+            if let Some(error) = coordinator.last_error() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(239, 83, 80),
+                    format!("Server/workspace error: {error}"),
+                );
+            }
+            if let Some(error) = self.settings.settings_error() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(239, 83, 80),
+                    format!("Settings error: {error}"),
+                );
+            }
+            if let Some(error) = transient.settings_save_error.as_deref() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(239, 83, 80),
+                    format!("Settings save error: {error}"),
+                );
+                ui.label("The previous configured port remains unchanged.");
+            }
+            if transient.settings_save_succeeded {
+                ui.colored_label(
+                    egui::Color32::from_rgb(129, 199, 132),
+                    "Port saved for next launch",
+                );
+            }
+            let marker = if transient.settings_expanded {
+                "▼"
+            } else {
+                "▶"
+            };
+            let settings_toggle = ui.button(format!("{marker} Local server settings"));
+            if settings_toggle.clicked() {
+                transient.settings_expanded = !transient.settings_expanded;
+            }
+            #[cfg(test)]
+            transient
+                .control_rects
+                .insert("Local server settings".to_owned(), settings_toggle.rect);
+            if transient.settings_expanded {
+                render_settings(
+                    ui,
+                    &mut self.settings,
+                    transient,
+                    coordinator.server_address().map(|address| address.port()),
+                );
+            }
+        });
+
+        egui::SidePanel::left("widget-list")
+            .resizable(true)
+            .default_width(WIDGET_LIST_INITIAL_WIDTH)
+            .min_width(WIDGET_LIST_MINIMUM_WIDTH)
+            .max_width(320.0)
+            .show(context, |ui| {
+                #[cfg(test)]
+                {
+                    transient.widget_panel_rect = Some(ui.max_rect());
+                }
+                ui.heading("Widgets");
+                if let Some(id) = coordinator.selected_overlay_id() {
+                    ui.separator();
+                    render_widget_selector(ui, coordinator, transient, id);
+                } else {
+                    ui.label("Create or select an overlay to add text widgets.");
                 }
             });
 
-        egui::CentralPanel::default().show(context, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Overlay details");
-                ui.separator();
-                let Some(overlay) = coordinator.selected_overlay() else {
-                    transient.preview_drag = None;
-                    transient.inspector_target = None;
-                    ui.label("Select an overlay or use Create overlay to make your first workspace.");
-                    return;
-                };
-
-                let id = overlay.id();
-                let name = overlay.name().to_owned();
-                let canvas = overlay.canvas();
-                ui.label(format!("Name: {name}"));
-                ui.label(format!("Canvas: {} × {}", canvas.width(), canvas.height()));
-                ui.label(format!("Stable identity: {id}"));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Rename").clicked() {
-                        let _ = begin_rename(coordinator, transient);
-                    }
-                    if ui.button("Delete").clicked() {
-                        let _ = begin_delete(coordinator, transient);
+        egui::SidePanel::right("widget-inspector")
+            .resizable(true)
+            .default_width(INSPECTOR_INITIAL_WIDTH)
+            .min_width(INSPECTOR_MINIMUM_WIDTH)
+            .max_width(360.0)
+            .show(context, |ui| {
+                #[cfg(test)]
+                {
+                    transient.inspector_panel_rect = Some(ui.max_rect());
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if let Some(id) = coordinator.selected_overlay_id() {
+                        render_selected_widget_inspector(ui, coordinator, transient, id);
+                    } else {
+                        ui.heading("Overlay information");
+                        ui.label("Create or select an overlay to view its properties.");
                     }
                 });
-                ui.add_space(8.0);
+            });
 
-                render_widget_selector(ui, coordinator, transient, id);
+        egui::CentralPanel::default().show(context, |ui| {
+            let Some(overlay) = coordinator.selected_overlay() else {
+                transient.preview_drag = None;
+                transient.inspector_target = None;
+                ui.vertical_centered(|ui| {
+                    ui.heading("Canvas preview");
+                    ui.add_space(16.0);
+                    ui.label("Create or select an overlay to begin composing.");
+                });
+                return;
+            };
+
+            let id = overlay.id();
+            let canvas = overlay.canvas();
+            ui.vertical_centered(|ui| {
+                ui.heading("Canvas preview");
+                ui.label("Drag the selected widget to move it");
                 ui.add_space(8.0);
-                render_selected_widget_inspector(ui, coordinator, transient, id);
-                ui.add_space(8.0);
-                ui.label("Canvas preview — drag the selected widget to move it");
                 render_collection_preview(ui, coordinator, transient, id);
-                ui.add_space(8.0);
-                ui.label("Browser-source URL");
-                if let Some(url) = coordinator.selected_url() {
-                    ui.monospace(&url);
-                    ui.horizontal(|ui| {
-                        if ui.button("Copy URL").clicked() {
-                            copy_url(ui.ctx(), &url);
-                        }
-                        if ui.button("Open in browser").clicked() {
-                            open_url(ui.ctx(), &url);
-                        }
-                    });
-                } else {
-                    ui.label("Unavailable until the local server successfully binds and reports readiness.");
-                }
+                ui.add_space(4.0);
+                ui.weak(format!(
+                    "{} × {} transparent output",
+                    canvas.width(),
+                    canvas.height()
+                ));
             });
         });
 
@@ -525,8 +791,7 @@ fn render_widget_selector(
     overlay_id: OverlayId,
 ) {
     ui.horizontal(|ui| {
-        ui.heading("Widget selector");
-        let response = ui.button("Add text widget");
+        let response = ui.button("Add text");
         #[cfg(test)]
         transient
             .control_rects
@@ -552,20 +817,49 @@ fn render_widget_selector(
                 .collect()
         })
         .unwrap_or_default();
-    for (widget_id, name) in rows {
-        ui.push_id(("widget-row", overlay_id, widget_id), |ui| {
-            let response = ui.selectable_label(selected_widget == Some(widget_id), name);
-            #[cfg(test)]
-            transient
-                .widget_selector_rects
-                .insert(widget_id, response.rect);
-            if response.clicked() {
-                if coordinator.select_widget(widget_id).is_ok() {
-                    clear_inspector_state(transient);
-                    transient.inspector_target = Some((overlay_id, widget_id));
+    if rows.is_empty() {
+        ui.label("No text widgets yet.");
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt(("widget-rows", overlay_id))
+            .show(ui, |ui| {
+                for (widget_id, name) in rows {
+                    ui.push_id(("widget-row", overlay_id, widget_id), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("TXT").weak().monospace());
+                            let selected = selected_widget == Some(widget_id);
+                            let marker = if selected { "▶ " } else { "  " };
+                            let name_width = (ui.available_width() - 88.0).max(32.0);
+                            let response = ui.add_sized(
+                                [name_width, ui.spacing().interact_size.y],
+                                egui::Button::new(format!("{marker}{name}")).selected(selected),
+                            );
+                            #[cfg(test)]
+                            transient
+                                .widget_selector_rects
+                                .insert(widget_id, response.rect);
+                            if response.clicked() {
+                                if coordinator.select_widget(widget_id).is_ok() {
+                                    clear_inspector_state(transient);
+                                    transient.inspector_target = Some((overlay_id, widget_id));
+                                }
+                            }
+                            let rename = ui.small_button("Rename");
+                            #[cfg(test)]
+                            transient
+                                .control_rects
+                                .insert(format!("Rename widget {widget_id}"), rename.rect);
+                            if rename.clicked() {
+                                if coordinator.select_widget(widget_id).is_ok() {
+                                    clear_inspector_state(transient);
+                                    transient.inspector_target = Some((overlay_id, widget_id));
+                                    transient.name_focus_target = Some((overlay_id, widget_id));
+                                }
+                            }
+                        });
+                    });
                 }
-            }
-        });
+            });
     }
 }
 
@@ -654,6 +948,14 @@ fn render_selected_widget_inspector(
     transient
         .control_rects
         .insert("Widget name".to_owned(), name_response.rect);
+    if transient.name_focus_target == Some((overlay_id, values.id)) {
+        name_response.request_focus();
+        transient.name_focus_target = None;
+    }
+    #[cfg(test)]
+    {
+        transient.name_field_focused = name_response.has_focus();
+    }
     ui.label("Content");
     let content_response = ui.add(
         egui::TextEdit::multiline(&mut values.content)
@@ -757,13 +1059,17 @@ fn render_selected_widget_inspector(
     }
 }
 
-const PREVIEW_MAX_HEIGHT: f32 = 360.0;
 const PREVIEW_MIN_HANDLE: f32 = 12.0;
 const PREVIEW_MAX_PAINT_FONT: f32 = 512.0;
+const CHECKER_TILE_SIZE: f32 = 16.0;
 
-fn preview_scale(canvas: crate::model::CanvasSize, available_width: f32) -> f32 {
+fn preview_scale(
+    canvas: crate::model::CanvasSize,
+    available_width: f32,
+    available_height: f32,
+) -> f32 {
     (available_width.max(1.0) / canvas.width() as f32)
-        .min(PREVIEW_MAX_HEIGHT / canvas.height() as f32)
+        .min(available_height.max(1.0) / canvas.height() as f32)
         .min(1.0)
 }
 
@@ -881,7 +1187,7 @@ fn render_canvas_preview(
     #[cfg(test)] control_rects: &mut HashMap<String, egui::Rect>,
     #[cfg(test)] preview_rect: &mut Option<egui::Rect>,
 ) -> Option<(TextWidgetId, Position)> {
-    let scale = preview_scale(canvas, ui.available_width());
+    let scale = preview_scale(canvas, ui.available_width(), ui.available_height());
     let size = egui::vec2(
         canvas.width() as f32 * scale,
         canvas.height() as f32 * scale,
@@ -892,7 +1198,23 @@ fn render_canvas_preview(
         *preview_rect = Some(canvas_rect);
     }
     let painter = ui.painter_at(canvas_rect);
-    painter.rect_filled(canvas_rect, 0.0, egui::Color32::from_gray(24));
+    let columns = (canvas_rect.width() / CHECKER_TILE_SIZE).ceil() as usize;
+    let rows = (canvas_rect.height() / CHECKER_TILE_SIZE).ceil() as usize;
+    for row in 0..rows {
+        for column in 0..columns {
+            let tile = egui::Rect::from_min_size(
+                canvas_rect.min
+                    + egui::vec2(
+                        column as f32 * CHECKER_TILE_SIZE,
+                        row as f32 * CHECKER_TILE_SIZE,
+                    ),
+                egui::vec2(CHECKER_TILE_SIZE, CHECKER_TILE_SIZE),
+            )
+            .intersect(canvas_rect);
+            let gray = if (row + column) % 2 == 0 { 32 } else { 42 };
+            painter.rect_filled(tile, 0.0, egui::Color32::from_gray(gray));
+        }
+    }
     painter.rect_stroke(
         canvas_rect,
         0.0,
@@ -1173,87 +1495,76 @@ fn open_selected_url(
 }
 
 fn render_settings(
-    context: &egui::Context,
+    ui: &mut egui::Ui,
     settings: &mut SettingsState,
     transient: &mut TransientState,
-    coordinator: Option<&HeadlessCoordinator>,
+    active_port: Option<u16>,
 ) {
     let configured_port = settings.configured_port();
     let settings_path = settings
         .settings_path()
         .map(|path| path.display().to_string());
-    let settings_error = settings.settings_error().map(ToString::to_string);
-    let active_port = coordinator
-        .and_then(|coordinator| coordinator.server_address().map(|address| address.port()));
-
-    egui::TopBottomPanel::bottom("settings")
-        .resizable(true)
-        .default_height(174.0)
-        .show(context, |ui| {
-            ui.heading("Local server settings");
-            ui.horizontal_wrapped(|ui| {
-                if let Some(port) = configured_port {
-                    ui.label(format!("Current configured port: {port}"));
-                    ui.label(format!("Next-launch port: {port}"));
-                } else {
-                    ui.label("Current configured port: unavailable");
-                    ui.label("Next-launch port: unavailable");
-                    ui.label(format!(
-                        "Display-only default: {} (not used while settings are invalid).",
-                        settings.display_port()
-                    ));
-                }
-                if let Some(path) = settings_path.as_deref() {
-                    ui.label(format!("Settings path: {path}"));
-                } else {
-                    ui.label("Settings path: unavailable");
-                }
-                if let Some(active_port) = active_port {
-                    ui.label(format!(
-                        "Running server remains on port {active_port} until restart."
-                    ));
-                }
-            });
-            if let Some(error) = settings_error.as_deref() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(183, 28, 28),
-                    format!("Settings error: {error}"),
-                );
-                ui.label(
-                    "First copy the exact settings source to a separate backup location. Then repair it or move it aside yourself, and restart Chikachika.",
-                );
-                ui.label(
-                    "No fallback port is used while settings are invalid.",
-                );
-            }
-            ui.horizontal(|ui| {
-                ui.label("Port for next launch (1–65535)");
-                let input = ui.text_edit_singleline(&mut transient.settings_port_input);
-                if input.changed() {
-                    transient.settings_save_error = None;
-                    transient.settings_save_succeeded = false;
-                }
-                if ui.button("Save port for next launch").clicked()
-                    && let Err(error) = save_port_for_next_launch(settings, transient)
-                {
-                    transient.settings_save_error = Some(error);
-                }
-            });
-            if let Some(error) = transient.settings_save_error.as_deref() {
-                ui.colored_label(egui::Color32::from_rgb(183, 28, 28), error);
-                ui.label(
-                    "Check the settings path and permissions, then try again. The previous configured port remains unchanged.",
-                );
-            }
-            if transient.settings_save_succeeded {
-                ui.colored_label(
-                    egui::Color32::from_rgb(46, 125, 50),
-                    "Port saved for next launch. Changes take effect after restarting Chikachika.",
-                );
-            } else {
-                ui.label("Port changes take effect only after restarting Chikachika.");
-            }
-        });
+    ui.horizontal_wrapped(|ui| {
+        if let Some(port) = configured_port {
+            ui.label(format!("Current configured port: {port}"));
+            ui.label(format!("Next-launch port: {port}"));
+        } else {
+            ui.label("Current configured port: unavailable");
+            ui.label("Next-launch port: unavailable");
+            ui.label(format!(
+                "Display-only default: {} (not used while settings are invalid).",
+                settings.display_port()
+            ));
+        }
+        if let Some(path) = settings_path.as_deref() {
+            ui.label(format!("Settings path: {path}"));
+        } else {
+            ui.label("Settings path: unavailable");
+        }
+        if let Some(active_port) = active_port {
+            ui.label(format!(
+                "Running server remains on port {active_port} until restart."
+            ));
+        }
+    });
+    if settings.settings_error().is_some() {
+        ui.label(
+            "First copy the exact settings source to a separate backup location. Then repair it or move it aside yourself, and restart Chikachika.",
+        );
+        ui.label("No fallback port is used while settings are invalid.");
+    }
+    ui.horizontal(|ui| {
+        ui.label("Port for next launch (1–65535)");
+        let input = ui.text_edit_singleline(&mut transient.settings_port_input);
+        if input.changed() {
+            transient.settings_save_error = None;
+            transient.settings_save_succeeded = false;
+        }
+        let save = ui.button("Save port for next launch");
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Save port for next launch".to_owned(), save.rect);
+        if save.clicked()
+            && let Err(error) = save_port_for_next_launch(settings, transient)
+        {
+            transient.settings_save_error = Some(error);
+        }
+    });
+    if let Some(error) = transient.settings_save_error.as_deref() {
+        ui.label(
+            "Check the settings path and permissions, then try again. The previous configured port remains unchanged.",
+        );
+        ui.colored_label(egui::Color32::from_rgb(239, 83, 80), error);
+    }
+    if transient.settings_save_succeeded {
+        ui.colored_label(
+            egui::Color32::from_rgb(129, 199, 132),
+            "Port saved for next launch. Changes take effect after restarting Chikachika.",
+        );
+    } else {
+        ui.label("Port changes take effect only after restarting Chikachika.");
+    }
 }
 
 #[cfg(test)]
@@ -1264,6 +1575,16 @@ fn append_settings_labels(
     active_port: Option<u16>,
 ) {
     visible.push("Local server settings".to_owned());
+    if !transient.settings_expanded {
+        if let Some(error) = settings.settings_error() {
+            visible.push(format!("Settings error: {error}"));
+        }
+        if let Some(error) = transient.settings_save_error.as_deref() {
+            visible.push(format!("Settings save error: {error}"));
+            visible.push("The previous configured port remains unchanged.".to_owned());
+        }
+        return;
+    }
     if let Some(port) = settings.configured_port() {
         visible.push(format!("Current configured port: {port}"));
         visible.push(format!("Next-launch port: {port}"));
@@ -1477,12 +1798,19 @@ pub struct ScenarioHarness {
 impl ScenarioHarness {
     /// Creates a harness from deterministic startup state.
     pub fn new(outcome: BootstrapOutcome) -> Self {
-        Self::new_with_size(outcome, egui::vec2(960.0, 640.0))
+        Self::new_with_size(
+            outcome,
+            egui::vec2(WINDOW_INITIAL_SIZE[0], WINDOW_INITIAL_SIZE[1]),
+        )
     }
 
     /// Creates a harness from deterministic startup state and settings.
     pub fn new_with_settings(outcome: BootstrapOutcome, settings: SettingsState) -> Self {
-        Self::new_with_size_and_settings(outcome, settings, egui::vec2(960.0, 640.0))
+        Self::new_with_size_and_settings(
+            outcome,
+            settings,
+            egui::vec2(WINDOW_INITIAL_SIZE[0], WINDOW_INITIAL_SIZE[1]),
+        )
     }
 
     fn new_with_size(outcome: BootstrapOutcome, screen_size: egui::Vec2) -> Self {
@@ -1591,10 +1919,13 @@ impl ScenarioHarness {
 
     /// Clicks a rendered control using its actual rectangle.
     pub fn pointer_click_control(&mut self, label: &str) -> Result<(), String> {
-        let rect = self
+        let initial_rect = self
             .control_rect(label)
             .ok_or_else(|| format!("control rectangle is unavailable: {label}"))?;
-        self.pointer_click(rect.center());
+        self.pointer_move(initial_rect.center());
+        let rect = self.control_rect(label).unwrap_or(initial_rect);
+        self.pointer_button(rect.center(), true);
+        self.pointer_button(rect.center(), false);
         Ok(())
     }
 
@@ -1654,7 +1985,9 @@ impl ScenarioHarness {
     pub fn click(&mut self, label: &str) -> Result<(), String> {
         match label {
             "Copy URL" => copy_selected_url(&self.context, self.app.coordinator.as_ref())?,
-            "Open in browser" => open_selected_url(&self.context, self.app.coordinator.as_ref())?,
+            "Open in browser" | "Open output" => {
+                open_selected_url(&self.context, self.app.coordinator.as_ref())?
+            }
             _ => self.app.activate(label)?,
         }
         self.frame();
@@ -1726,10 +2059,19 @@ impl ScenarioHarness {
             return false;
         };
         let mut visible = vec![
-            "Chikachika overlay workspace".to_owned(),
-            "Overlays".to_owned(),
+            "File".to_owned(),
+            "Edit".to_owned(),
+            "View".to_owned(),
+            "Help".to_owned(),
+            "Overlay".to_owned(),
+            "Widgets".to_owned(),
+            "Canvas preview".to_owned(),
             "Create overlay".to_owned(),
-            "Overlay details".to_owned(),
+            "Create Overlay".to_owned(),
+            "Fit Canvas".to_owned(),
+            "User Documentation".to_owned(),
+            "Server unavailable".to_owned(),
+            "Local server settings".to_owned(),
         ];
         if coordinator.is_dirty() {
             visible.extend(["Unsaved changes".to_owned(), "Save".to_owned()]);
@@ -1752,13 +2094,12 @@ impl ScenarioHarness {
                 overlay.name().to_owned(),
                 "Rename".to_owned(),
                 "Delete".to_owned(),
-                "Widget selector".to_owned(),
                 "Frontmost first".to_owned(),
+                "Add text".to_owned(),
                 "Add text widget".to_owned(),
-                "Browser-source URL".to_owned(),
             ]);
             if let Some(url) = coordinator.selected_url() {
-                visible.extend([url, "Copy URL".to_owned(), "Open in browser".to_owned()]);
+                visible.extend([url, "Copy URL".to_owned(), "Open output".to_owned()]);
             } else {
                 visible.push(
                     "Unavailable until the local server successfully binds and reports readiness."
@@ -1784,6 +2125,7 @@ impl ScenarioHarness {
                     "Alignment".to_owned(),
                     "Position".to_owned(),
                     "Canvas preview".to_owned(),
+                    "Text".to_owned(),
                 ]);
             } else {
                 visible.extend([
@@ -1819,6 +2161,19 @@ impl ScenarioHarness {
         if let Some(error) = self.app.transient.dialog_error.as_deref() {
             visible.push(error.to_owned());
         }
+        if let Some(error) = self.app.settings.settings_error() {
+            visible.push(format!("Settings error: {error}"));
+        }
+        if let Some(error) = self.app.transient.settings_save_error.as_deref() {
+            visible.push(format!("Settings save error: {error}"));
+        }
+        if self.app.transient.settings_save_succeeded {
+            visible.push("Port saved for next launch".to_owned());
+            visible.push(
+                "Port saved for next launch. Changes take effect after restarting Chikachika."
+                    .to_owned(),
+            );
+        }
         append_settings_labels(
             &mut visible,
             &self.app.settings,
@@ -1842,8 +2197,8 @@ impl ScenarioHarness {
 pub fn run(bootstrap: ApplicationBootstrap) -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 640.0])
-            .with_min_inner_size([720.0, 480.0]),
+            .with_inner_size(WINDOW_INITIAL_SIZE)
+            .with_min_inner_size(WINDOW_MINIMUM_SIZE),
         ..Default::default()
     };
 
@@ -1893,6 +2248,248 @@ mod tests {
     }
 
     #[test]
+    fn workspace_keeps_canvas_inside_the_minimum_window() {
+        let mut harness = ScenarioHarness::new_with_size(
+            BootstrapOutcome::Ready(ready_app()),
+            egui::vec2(1024.0, 640.0),
+        );
+        setup_widgets(&mut harness);
+        harness.frame();
+
+        let canvas = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("canvas preview is rendered");
+        assert!(
+            canvas.left() >= 180.0,
+            "canvas overlaps the left panel: {canvas:?}"
+        );
+        assert!(
+            canvas.right() <= 1024.0,
+            "canvas exceeds the window: {canvas:?}"
+        );
+        assert!(
+            canvas.top() >= 50.0,
+            "canvas overlaps the menu bars: {canvas:?}"
+        );
+        assert!(
+            canvas.bottom() <= 640.0,
+            "canvas exceeds the window: {canvas:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_keeps_canvas_inside_a_larger_desktop_window() {
+        let mut harness = ScenarioHarness::new_with_size(
+            BootstrapOutcome::Ready(ready_app()),
+            egui::vec2(1280.0, 800.0),
+        );
+        setup_widgets(&mut harness);
+        harness.frame();
+
+        let canvas = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("canvas preview is rendered");
+        assert!(
+            canvas.left() >= 180.0,
+            "canvas overlaps the left panel: {canvas:?}"
+        );
+        assert!(
+            canvas.right() <= 1280.0,
+            "canvas exceeds the window: {canvas:?}"
+        );
+        assert!(
+            canvas.top() >= 50.0,
+            "canvas overlaps the menu bars: {canvas:?}"
+        );
+        assert!(
+            canvas.bottom() <= 800.0,
+            "canvas exceeds the window: {canvas:?}"
+        );
+    }
+
+    #[test]
+    fn native_window_and_sidebar_sizes_match_the_workspace_contract() {
+        assert_eq!(WINDOW_INITIAL_SIZE, [1280.0, 800.0]);
+        assert_eq!(WINDOW_MINIMUM_SIZE, [1024.0, 640.0]);
+        assert_eq!(WIDGET_LIST_INITIAL_WIDTH, 220.0);
+        assert_eq!(WIDGET_LIST_MINIMUM_WIDTH, 180.0);
+        assert_eq!(INSPECTOR_INITIAL_WIDTH, 280.0);
+        assert_eq!(INSPECTOR_MINIMUM_WIDTH, 260.0);
+    }
+
+    #[test]
+    fn issue_23_menus_run_their_supported_actions() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let coordinator =
+            HeadlessCoordinator::empty(Store::at(directory.path().join("overlays.json")));
+        let mut harness = ScenarioHarness::new_with_size(
+            BootstrapOutcome::Ready(coordinator),
+            egui::vec2(WINDOW_INITIAL_SIZE[0], WINDOW_INITIAL_SIZE[1]),
+        );
+        harness.frame();
+
+        harness
+            .pointer_click_control("File menu")
+            .expect("open File menu");
+        harness
+            .pointer_click_control("File/Create Overlay")
+            .expect("open create dialog from File menu");
+        assert!(harness.app().transient.create_open);
+        harness.click("Cancel").expect("close create dialog");
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+
+        harness
+            .pointer_click_control("Edit menu")
+            .expect("open Edit menu");
+        harness
+            .pointer_click_control("Edit/Add Text")
+            .expect("add text from Edit menu");
+        harness
+            .pointer_click_control("Edit menu")
+            .expect("reopen Edit menu");
+        harness
+            .pointer_click_control("Edit/Duplicate")
+            .expect("duplicate from Edit menu");
+        let coordinator = harness.app().coordinator().unwrap();
+        let duplicated = coordinator
+            .selected_widget_id()
+            .expect("duplicate selected");
+        let added = coordinator
+            .selected_overlay()
+            .unwrap()
+            .widgets()
+            .iter()
+            .find(|widget| widget.id() != duplicated)
+            .unwrap()
+            .id();
+        assert_eq!(coordinator.selected_overlay().unwrap().widgets().len(), 2);
+        harness
+            .pointer_click_control("Edit menu")
+            .expect("reopen Edit menu");
+        harness
+            .pointer_click_control("Edit/Backward")
+            .expect("move widget backward from Edit menu");
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_overlay()
+                .unwrap()
+                .widgets()
+                .iter()
+                .map(TextWidget::id)
+                .collect::<Vec<_>>(),
+            vec![added, duplicated]
+        );
+        harness
+            .pointer_click_control("Edit menu")
+            .expect("reopen Edit menu");
+        harness
+            .pointer_click_control("Edit/Forward")
+            .expect("move widget forward from Edit menu");
+        harness
+            .pointer_click_control("Edit menu")
+            .expect("reopen Edit menu");
+        harness
+            .pointer_click_control("Edit/Delete")
+            .expect("delete from Edit menu");
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_overlay()
+                .unwrap()
+                .widgets()
+                .len(),
+            1
+        );
+
+        harness
+            .pointer_click_control("View menu")
+            .expect("open View menu");
+        harness
+            .pointer_click_control("View/Fit Canvas")
+            .expect("fit canvas from View menu");
+        harness
+            .pointer_click_control("Help menu")
+            .expect("open Help menu");
+        harness
+            .pointer_click_control("Help/User Documentation")
+            .expect("open user documentation from Help menu");
+        assert_eq!(harness.opened_url(), Some(USER_DOCUMENTATION_URL));
+
+        harness
+            .pointer_click_control("File menu")
+            .expect("reopen File menu");
+        harness
+            .pointer_click_control("File/Save")
+            .expect("save from File menu");
+        assert!(!harness.app().coordinator().unwrap().is_dirty());
+    }
+
+    #[test]
+    fn output_actions_wait_for_server_readiness() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.click("Create overlay").expect("open create dialog");
+        harness.set_create_fields("Live", "320", "240");
+        harness.click("Create").expect("create overlay");
+        harness.frame();
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_url()
+                .is_none()
+        );
+        assert!(harness.has_label("Unavailable until the local server successfully binds"));
+        harness
+            .pointer_click_control("Copy URL")
+            .expect("readiness-disabled URL action is still safely inactive");
+        assert!(harness.copied_text().is_empty());
+
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .set_server_address("127.0.0.1:1234".parse().unwrap());
+        harness.frame();
+        let url = harness.app().coordinator().unwrap().selected_url().unwrap();
+        harness
+            .pointer_click_control("Copy URL")
+            .expect("copy ready output URL");
+        assert_eq!(harness.copied_text(), url);
+        harness
+            .pointer_click_control("Open output")
+            .expect("open ready output");
+        assert_eq!(harness.opened_url(), Some(url.as_str()));
+    }
+
+    #[test]
+    fn widget_row_rename_focuses_the_existing_inspector_field() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (_overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+
+        harness
+            .pointer_click_control(&format!("Rename widget {}", ids[1]))
+            .expect("focus the inspector name field from the widget row");
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[1])
+        );
+        assert!(harness.app().transient.name_field_focused);
+    }
+
+    #[test]
     fn blocked_startup_shows_backup_first_recovery_guidance() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let source_path = directory.path().join("overlays.json");
@@ -1927,6 +2524,12 @@ mod tests {
         harness.frame();
 
         assert!(harness.has_label("Local server settings"));
+        assert!(harness.control_rect("Save port for next launch").is_none());
+        harness
+            .pointer_click_control("Local server settings")
+            .expect("expand server settings");
+        harness.frame();
+        assert!(harness.control_rect("Save port for next launch").is_some());
         assert!(harness.has_label("Current configured port: 4000"));
         assert!(harness.has_label("Next-launch port: 4000"));
         assert!(harness.has_label(&format!("Settings path: {}", settings_path.display())));
@@ -2021,6 +2624,9 @@ mod tests {
         let mut harness =
             ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(ready_app()), settings);
         harness.frame();
+        harness
+            .pointer_click_control("Local server settings")
+            .expect("expand server settings");
 
         assert!(harness.has_label("Current configured port: unavailable"));
         assert!(harness.has_label("Settings error:"));
@@ -2134,8 +2740,10 @@ mod tests {
     #[test]
     fn preview_scale_and_coordinate_conversion_preserve_canvas_geometry() {
         let canvas = crate::model::CanvasSize::new(1920, 1080).unwrap();
-        let scale = preview_scale(canvas, 960.0);
+        let scale = preview_scale(canvas, 960.0, 360.0);
         assert_eq!(scale, 1.0 / 3.0);
+        assert_eq!(preview_scale(canvas, 600.0, 400.0), 600.0 / 1920.0);
+        assert_eq!(preview_scale(canvas, 400.0, 500.0), 400.0 / 1920.0);
 
         let origin = egui::pos2(10.0, 20.0);
         let position = Position::new(300.0, 150.0);
@@ -2288,6 +2896,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![ids[1], ids[0], ids[2]]
         );
+        harness.frame();
         harness
             .pointer_click_control("Backward")
             .expect("move selected widget backward through egui pointer input");
@@ -2490,16 +3099,7 @@ mod tests {
                 .unwrap();
         }
         harness.frame();
-        let preview_rect = harness
-            .app()
-            .transient
-            .preview_rect
-            .expect("actual preview canvas shape");
-        let scale = preview_scale(
-            crate::model::CanvasSize::new(320, 240).unwrap(),
-            preview_rect.width(),
-        );
-        let origin = canvas_to_preview(preview_rect.min, Position::new(40.0, 30.0), scale);
+        let canvas_size = crate::model::CanvasSize::new(320, 240).unwrap();
         let hitbox = harness
             .control_rect("Canvas preview")
             .expect("selected widget preview hitbox");
@@ -2508,11 +3108,26 @@ mod tests {
         harness.pointer_move(grab);
         harness.pointer_button(grab, true);
         assert!(harness.app().transient.preview_drag.is_some());
+        let pressed_preview_rect = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("canvas preview while pointer is pressed");
+        let pressed_scale = preview_scale(
+            canvas_size,
+            pressed_preview_rect.width(),
+            pressed_preview_rect.height(),
+        );
+        let pressed_origin = canvas_to_preview(
+            pressed_preview_rect.min,
+            Position::new(40.0, 30.0),
+            pressed_scale,
+        );
         harness.pointer_move(moved_pointer);
         assert!(harness.app().transient.preview_drag.is_some());
         assert_eq!(
             harness.app().transient.preview_drag.unwrap().pointer_offset,
-            grab - origin
+            grab - pressed_origin
         );
         assert_eq!(
             harness
@@ -2525,11 +3140,11 @@ mod tests {
                 .unwrap()
                 .position(),
             preview_to_canvas(
-                preview_rect.min,
+                pressed_preview_rect.min,
                 moved_pointer,
-                grab - origin,
-                scale,
-                crate::model::CanvasSize::new(320, 240).unwrap()
+                grab - pressed_origin,
+                pressed_scale,
+                canvas_size
             )
         );
 
@@ -2659,7 +3274,7 @@ mod tests {
         assert!(production.contains("Backward"));
         assert!(!production.contains("text_widget()"));
         assert!(!production.contains("revision()"));
-        assert!(production.contains("Browser-source URL"));
+        assert!(production.contains("Open output"));
         assert!(production.contains("Save port for next launch"));
     }
 }
