@@ -302,7 +302,7 @@ impl ChikachikaApp {
 
         egui::TopBottomPanel::top("menu-bar").show(context, |ui| {
             ui.horizontal(|ui| {
-                let file = ui.menu_button("File", |ui| {
+                let _file = ui.menu_button("File", |ui| {
                     let create = ui.button("Create Overlay");
                     #[cfg(test)]
                     transient
@@ -322,7 +322,7 @@ impl ChikachikaApp {
                         ui.close_menu();
                     }
                 });
-                let edit = ui.menu_button("Edit", |ui| {
+                let _edit = ui.menu_button("Edit", |ui| {
                     let can_edit_overlay = coordinator.selected_overlay_id().is_some();
                     let can_edit_widget = coordinator.selected_widget_id().is_some();
                     let add = ui.add_enabled(can_edit_overlay, egui::Button::new("Add Text"));
@@ -399,7 +399,7 @@ impl ChikachikaApp {
                         ui.close_menu();
                     }
                 });
-                let view = ui.menu_button("View", |ui| {
+                let _view = ui.menu_button("View", |ui| {
                     let fit = ui.button("Fit Canvas");
                     #[cfg(test)]
                     transient
@@ -410,7 +410,7 @@ impl ChikachikaApp {
                         ui.close_menu();
                     }
                 });
-                let help = ui.menu_button("Help", |ui| {
+                let _help = ui.menu_button("Help", |ui| {
                     let documentation = ui.button("User Documentation");
                     #[cfg(test)]
                     transient
@@ -425,16 +425,16 @@ impl ChikachikaApp {
                 {
                     transient
                         .control_rects
-                        .insert("File menu".to_owned(), file.response.rect);
+                        .insert("File menu".to_owned(), _file.response.rect);
                     transient
                         .control_rects
-                        .insert("Edit menu".to_owned(), edit.response.rect);
+                        .insert("Edit menu".to_owned(), _edit.response.rect);
                     transient
                         .control_rects
-                        .insert("View menu".to_owned(), view.response.rect);
+                        .insert("View menu".to_owned(), _view.response.rect);
                     transient
                         .control_rects
-                        .insert("Help menu".to_owned(), help.response.rect);
+                        .insert("Help menu".to_owned(), _help.response.rect);
                 }
             });
         });
@@ -452,7 +452,7 @@ impl ChikachikaApp {
                     .selected_overlay()
                     .map(|overlay| overlay.name())
                     .unwrap_or("Select an overlay");
-                let overlay_switcher = egui::ComboBox::from_id_salt("overlay-switcher")
+                let _overlay_switcher = egui::ComboBox::from_id_salt("overlay-switcher")
                     .selected_text(selected_name)
                     .show_ui(ui, |ui| {
                         for (id, name) in overlays {
@@ -469,7 +469,7 @@ impl ChikachikaApp {
                 #[cfg(test)]
                 transient.control_rects.insert(
                     "Overlay selector".to_owned(),
-                    overlay_switcher.response.rect,
+                    _overlay_switcher.response.rect,
                 );
                 let create = ui.button("Create overlay");
                 #[cfg(test)]
@@ -985,7 +985,7 @@ fn render_selected_widget_inspector(
         transient.name_field_focused = name_response.has_focus();
     }
     ui.label("Content");
-    let content_response = ui.add(
+    let _content_response = ui.add(
         egui::TextEdit::multiline(&mut values.content)
             .id(egui::Id::new(("widget-content", overlay_id, values.id)))
             .desired_rows(4)
@@ -994,7 +994,7 @@ fn render_selected_widget_inspector(
     #[cfg(test)]
     transient
         .control_rects
-        .insert("Widget content".to_owned(), content_response.rect);
+        .insert("Widget content".to_owned(), _content_response.rect);
     ui.horizontal(|ui| {
         ui.label("Font family");
         egui::ComboBox::from_id_salt(("font-family", overlay_id, values.id))
@@ -1012,7 +1012,7 @@ fn render_selected_widget_inspector(
                 );
             });
         ui.label("Font size");
-        let font_size_response = ui.add(
+        let _font_size_response = ui.add(
             egui::DragValue::new(&mut values.font_size)
                 .speed(0.5)
                 .suffix(" px"),
@@ -1020,7 +1020,7 @@ fn render_selected_widget_inspector(
         #[cfg(test)]
         transient
             .control_rects
-            .insert("Font size".to_owned(), font_size_response.rect);
+            .insert("Font size".to_owned(), _font_size_response.rect);
     });
     ui.horizontal(|ui| {
         ui.label("Color");
@@ -1043,20 +1043,20 @@ fn render_selected_widget_inspector(
     });
     ui.horizontal(|ui| {
         ui.label("Alignment");
-        let left = ui.selectable_value(&mut values.alignment, Alignment::Left, "Left");
-        let center = ui.selectable_value(&mut values.alignment, Alignment::Center, "Center");
-        let right = ui.selectable_value(&mut values.alignment, Alignment::Right, "Right");
+        let _left = ui.selectable_value(&mut values.alignment, Alignment::Left, "Left");
+        let _center = ui.selectable_value(&mut values.alignment, Alignment::Center, "Center");
+        let _right = ui.selectable_value(&mut values.alignment, Alignment::Right, "Right");
         #[cfg(test)]
         {
             transient
                 .control_rects
-                .insert("Alignment Left".to_owned(), left.rect);
+                .insert("Alignment Left".to_owned(), _left.rect);
             transient
                 .control_rects
-                .insert("Alignment Center".to_owned(), center.rect);
+                .insert("Alignment Center".to_owned(), _center.rect);
             transient
                 .control_rects
-                .insert("Alignment Right".to_owned(), right.rect);
+                .insert("Alignment Right".to_owned(), _right.rect);
         }
     });
     ui.horizontal(|ui| {
@@ -1064,17 +1064,17 @@ fn render_selected_widget_inspector(
         let mut x = values.position.x();
         let mut y = values.position.y();
         ui.label("X");
-        let x_response = ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
+        let _x_response = ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
         ui.label("Y");
-        let y_response = ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
+        let _y_response = ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
         #[cfg(test)]
         {
             transient
                 .control_rects
-                .insert("Position X".to_owned(), x_response.rect);
+                .insert("Position X".to_owned(), _x_response.rect);
             transient
                 .control_rects
-                .insert("Position Y".to_owned(), y_response.rect);
+                .insert("Position Y".to_owned(), _y_response.rect);
         }
         values.position = Position::new(
             x.clamp(0.0, canvas.width() as f32),
@@ -1265,7 +1265,7 @@ fn render_canvas_preview(
                 egui::vec2(CHECKER_TILE_SIZE, CHECKER_TILE_SIZE),
             )
             .intersect(canvas_rect);
-            let gray = if (row + column) % 2 == 0 { 32 } else { 42 };
+            let gray = if (row + column) % 2 == 0 { 112 } else { 122 };
             painter.rect_filled(tile, 0.0, egui::Color32::from_gray(gray));
         }
     }
