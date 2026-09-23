@@ -1224,6 +1224,11 @@ fn render_collection_preview(
         }
         None => {}
     }
+    if selection.is_some() {
+        // Selection is resolved after the inspector panel has rendered, so
+        // repaint once to bring its contents and the canvas outline up to date.
+        ui.ctx().request_repaint();
+    }
     if let Some((widget_id, position)) = moved {
         let _ = coordinator.update_overlay(overlay_id, |overlay| {
             overlay.set_widget_position(widget_id, position)
@@ -3285,7 +3290,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_canvas_click_clears_widget_selection() {
+    fn empty_canvas_click_repaints_inspector_and_selection_outline() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
         let (_overlay_id, ids) = setup_widgets(&mut harness);
         harness.frame();
@@ -3309,7 +3314,99 @@ mod tests {
             None
         );
         assert_eq!(harness.app().transient.inspector_target, None);
-        assert!(harness.has_label("Overlay information"));
+        // Process the repaint scheduled for the click and inspect the shapes
+        // actually emitted for the resulting frame.
+        harness.frame();
+        let rendered_text: Vec<&str> = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(rendered_text.contains(&"Overlay information"));
+        assert!(!rendered_text.contains(&"Widget inspector"));
+        assert!(
+            !harness.shapes().iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == SELECTION_OUTLINE_COLOR
+            )),
+            "selection outline should be removed in the repaint after the click"
+        );
+    }
+
+    #[test]
+    fn canvas_click_selects_a_separate_caption_and_renders_its_inspector() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let coordinator = harness.app_mut().coordinator_mut().unwrap();
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        let dark = coordinator
+            .add_widget(
+                overlay_id,
+                TextWidget::with_properties(
+                    "Dark foreground",
+                    Position::new(20.0, 20.0),
+                    24.0,
+                    Color::rgb(6, 5, 5),
+                    Alignment::Left,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let caption = coordinator
+            .add_widget(
+                overlay_id,
+                TextWidget::with_properties(
+                    "Light caption",
+                    Position::new(20.0, 130.0),
+                    16.0,
+                    Color::white(),
+                    Alignment::Left,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        coordinator.select_widget(dark).unwrap();
+        harness.frame();
+        let caption_hitbox = harness
+            .widget_canvas_rect(caption)
+            .expect("caption canvas hitbox");
+        assert!(
+            !harness
+                .widget_canvas_rect(dark)
+                .expect("dark foreground hitbox")
+                .contains(caption_hitbox.center()),
+            "caption hit should not overlap the selected foreground"
+        );
+
+        harness.pointer_click(caption_hitbox.center());
+
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(caption)
+        );
+        harness.frame();
+        let rendered_text: Vec<String> = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            rendered_text
+                .iter()
+                .any(|text| text.contains(&caption.to_string()))
+        );
+        assert!(
+            harness.shapes().iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == SELECTION_OUTLINE_COLOR
+            )),
+            "selected caption should have a cyan canvas outline"
+        );
     }
 
     #[test]
