@@ -35,6 +35,7 @@ struct TransientState {
     delete_target: Option<OverlayId>,
     dialog_error: Option<String>,
     preview_drag: Option<PreviewDrag>,
+    pending_widget_reveal: Option<(OverlayId, TextWidgetId)>,
     /// The target that owns the inspector's transient state. Keeping this
     /// separate from the coordinator makes it possible to discard stale UI
     /// state immediately when a selection or overlay changes.
@@ -46,6 +47,8 @@ struct TransientState {
     settings_expanded: bool,
     #[cfg(test)]
     widget_selector_rects: HashMap<TextWidgetId, egui::Rect>,
+    #[cfg(test)]
+    overlay_selector_rects: HashMap<OverlayId, egui::Rect>,
     #[cfg(test)]
     control_rects: HashMap<String, egui::Rect>,
     #[cfg(test)]
@@ -449,17 +452,25 @@ impl ChikachikaApp {
                     .selected_overlay()
                     .map(|overlay| overlay.name())
                     .unwrap_or("Select an overlay");
-                egui::ComboBox::from_id_salt("overlay-switcher")
+                let overlay_switcher = egui::ComboBox::from_id_salt("overlay-switcher")
                     .selected_text(selected_name)
                     .show_ui(ui, |ui| {
                         for (id, name) in overlays {
-                            if ui.selectable_label(selected == Some(id), name).clicked() {
+                            let response = ui.selectable_label(selected == Some(id), name);
+                            #[cfg(test)]
+                            transient.overlay_selector_rects.insert(id, response.rect);
+                            if response.clicked() {
                                 let _ = select_overlay(coordinator, id);
                                 clear_inspector_state(transient);
                                 transient.inspector_target = None;
                             }
                         }
                     });
+                #[cfg(test)]
+                transient.control_rects.insert(
+                    "Overlay selector".to_owned(),
+                    overlay_switcher.response.rect,
+                );
                 let create = ui.button("Create overlay");
                 #[cfg(test)]
                 transient
@@ -703,6 +714,8 @@ impl TextEditorValues {
 
 fn clear_inspector_state(transient: &mut TransientState) {
     transient.preview_drag = None;
+    transient.pending_widget_reveal = None;
+    transient.name_focus_target = None;
 }
 
 fn add_selected_text_widget(
@@ -817,11 +830,23 @@ fn render_widget_selector(
                 .collect()
         })
         .unwrap_or_default();
+    let reveal_widget =
+        transient
+            .pending_widget_reveal
+            .take()
+            .and_then(|(target_overlay, target_widget)| {
+                (target_overlay == overlay_id
+                    && rows
+                        .iter()
+                        .any(|(widget_id, _)| *widget_id == target_widget))
+                .then_some(target_widget)
+            });
     if rows.is_empty() {
         ui.label("No text widgets yet.");
     } else {
         egui::ScrollArea::vertical()
             .id_salt(("widget-rows", overlay_id))
+            .animated(false)
             .show(ui, |ui| {
                 for (widget_id, name) in rows {
                     ui.push_id(("widget-row", overlay_id, widget_id), |ui| {
@@ -843,6 +868,9 @@ fn render_widget_selector(
                                     clear_inspector_state(transient);
                                     transient.inspector_target = Some((overlay_id, widget_id));
                                 }
+                            }
+                            if reveal_widget == Some(widget_id) {
+                                response.scroll_to_me(Some(egui::Align::Center));
                             }
                             let rename = ui.small_button("Rename");
                             #[cfg(test)]
@@ -1062,6 +1090,14 @@ fn render_selected_widget_inspector(
 const PREVIEW_MIN_HANDLE: f32 = 12.0;
 const PREVIEW_MAX_PAINT_FONT: f32 = 512.0;
 const CHECKER_TILE_SIZE: f32 = 16.0;
+const HOVER_OUTLINE_COLOR: egui::Color32 = egui::Color32::from_rgb(224, 224, 224);
+const SELECTION_OUTLINE_COLOR: egui::Color32 = egui::Color32::from_rgb(38, 198, 218);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewSelection {
+    Widget(TextWidgetId),
+    Clear,
+}
 
 fn preview_scale(
     canvas: crate::model::CanvasSize,
@@ -1158,7 +1194,7 @@ fn render_collection_preview(
     let canvas = overlay.canvas();
     let widgets = overlay.widgets().to_vec();
     let selected_widget_id = coordinator.selected_widget_id();
-    let moved = render_canvas_preview(
+    let (selection, moved) = render_canvas_preview(
         ui,
         canvas,
         overlay_id,
@@ -1170,6 +1206,24 @@ fn render_collection_preview(
         #[cfg(test)]
         &mut transient.preview_rect,
     );
+    match selection {
+        Some(PreviewSelection::Widget(widget_id)) => {
+            if coordinator.select_widget(widget_id).is_ok() {
+                if !drag_matches(transient.preview_drag, overlay_id, widget_id) {
+                    transient.preview_drag = None;
+                }
+                transient.inspector_target = Some((overlay_id, widget_id));
+                transient.name_focus_target = None;
+                transient.pending_widget_reveal = Some((overlay_id, widget_id));
+            }
+        }
+        Some(PreviewSelection::Clear) => {
+            coordinator.clear_widget_selection();
+            clear_inspector_state(transient);
+            transient.inspector_target = None;
+        }
+        None => {}
+    }
     if let Some((widget_id, position)) = moved {
         let _ = coordinator.update_overlay(overlay_id, |overlay| {
             overlay.set_widget_position(widget_id, position)
@@ -1186,13 +1240,13 @@ fn render_canvas_preview(
     drag: &mut Option<PreviewDrag>,
     #[cfg(test)] control_rects: &mut HashMap<String, egui::Rect>,
     #[cfg(test)] preview_rect: &mut Option<egui::Rect>,
-) -> Option<(TextWidgetId, Position)> {
+) -> (Option<PreviewSelection>, Option<(TextWidgetId, Position)>) {
     let scale = preview_scale(canvas, ui.available_width(), ui.available_height());
     let size = egui::vec2(
         canvas.width() as f32 * scale,
         canvas.height() as f32 * scale,
     );
-    let (canvas_rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let (canvas_rect, canvas_response) = ui.allocate_exact_size(size, egui::Sense::click());
     #[cfg(test)]
     {
         *preview_rect = Some(canvas_rect);
@@ -1222,6 +1276,15 @@ fn render_canvas_preview(
     );
 
     let mut moved = None;
+    let mut selection = None;
+    let mut pressed_widget = None;
+    let mut hovered_hitboxes = Vec::new();
+    let mut selected_hitbox = None;
+    let pointer_pressed =
+        ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary));
+    let pointer_position = ui.input(|input| input.pointer.interact_pos());
+    let pointer_button_down =
+        ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
     for widget in widgets.iter().rev() {
         let color = egui::Color32::from_rgba_unmultiplied(
             widget.color().red(),
@@ -1256,36 +1319,31 @@ fn render_canvas_preview(
             .translate(paint_origin.to_vec2())
             .intersect(region);
         let hitbox = widget_hitbox(canvas_rect, region_origin, visual_rect);
-        if selected_widget_id != Some(widget.id()) {
-            continue;
-        }
         #[cfg(test)]
-        control_rects.insert("Canvas preview".to_owned(), hitbox);
-        painter.rect_stroke(
-            hitbox,
-            0.0,
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 198, 218)),
-        );
+        control_rects.insert(format!("Canvas widget {}", widget.id()), hitbox);
         let response = ui.interact(
             hitbox,
             ui.make_persistent_id(("preview-text", overlay_id, widget.id())),
             egui::Sense::drag(),
         );
-
-        // Capture the grab offset on the press, before egui's drag threshold is
-        // crossed. Once a real drag starts the pointer may be outside the
-        // original hitbox, so checking `hitbox.contains` at `drag_started()`
-        // would reject every genuine drag.
-        if response.is_pointer_button_down_on()
+        if selected_widget_id == Some(widget.id()) {
+            #[cfg(test)]
+            control_rects.insert("Canvas preview".to_owned(), hitbox);
+            selected_hitbox = Some(hitbox);
+        }
+        if response.hovered() {
+            hovered_hitboxes.push(hitbox);
+        }
+        if pointer_pressed
             && drag.is_none()
-            && let Some(pointer) = response.interact_pointer_pos()
+            && response.is_pointer_button_down_on()
+            && let Some(pointer) = pointer_position
             && hitbox.contains(pointer)
         {
-            *drag = Some(PreviewDrag {
-                overlay_id,
-                widget_id: widget.id(),
-                pointer_offset: pointer - region_origin,
-            });
+            pressed_widget = Some((widget.id(), region_origin, pointer));
+        }
+        if response.clicked() {
+            selection = Some(PreviewSelection::Widget(widget.id()));
         }
         if response.dragged()
             && let (Some(active), Some(pointer)) = (*drag, response.interact_pointer_pos())
@@ -1302,11 +1360,31 @@ fn render_canvas_preview(
                 ),
             ));
         }
-        if response.drag_stopped() || !response.is_pointer_button_down_on() {
+        if drag_matches(*drag, overlay_id, widget.id())
+            && (response.drag_stopped() || !pointer_button_down)
+        {
             *drag = None;
         }
     }
-    moved
+    // Paint order is back-to-front, so the last active hit is frontmost.
+    if let Some((widget_id, widget_origin, pointer)) = pressed_widget {
+        selection = Some(PreviewSelection::Widget(widget_id));
+        *drag = Some(PreviewDrag {
+            overlay_id,
+            widget_id,
+            pointer_offset: pointer - widget_origin,
+        });
+    }
+    if selection.is_none() && canvas_response.clicked() {
+        selection = Some(PreviewSelection::Clear);
+    }
+    for hitbox in hovered_hitboxes {
+        painter.rect_stroke(hitbox, 0.0, egui::Stroke::new(1.0, HOVER_OUTLINE_COLOR));
+    }
+    if let Some(hitbox) = selected_hitbox {
+        painter.rect_stroke(hitbox, 0.0, egui::Stroke::new(2.0, SELECTION_OUTLINE_COLOR));
+    }
+    (selection, moved)
 }
 
 fn begin_create(transient: &mut TransientState) {
@@ -1859,6 +1937,7 @@ impl ScenarioHarness {
         #[cfg(test)]
         {
             self.app.transient.widget_selector_rects.clear();
+            self.app.transient.overlay_selector_rects.clear();
             self.app.transient.control_rects.clear();
             self.app.transient.preview_rect = None;
         }
@@ -1972,6 +2051,24 @@ impl ScenarioHarness {
             .transient
             .widget_selector_rects
             .get(&widget_id)
+            .copied()
+    }
+
+    /// Returns the current editor hitbox for a stable widget ID.
+    pub fn widget_canvas_rect(&self, widget_id: TextWidgetId) -> Option<egui::Rect> {
+        self.app
+            .transient
+            .control_rects
+            .get(&format!("Canvas widget {widget_id}"))
+            .copied()
+    }
+
+    /// Returns the overlay option rectangle emitted by the open selector.
+    pub fn overlay_selector_rect(&self, overlay_id: OverlayId) -> Option<egui::Rect> {
+        self.app
+            .transient
+            .overlay_selector_rects
+            .get(&overlay_id)
             .copied()
     }
 
@@ -2239,6 +2336,36 @@ mod tests {
         (overlay_id, vec![front, middle, back])
     }
 
+    fn assert_workspace_geometry(harness: &ScenarioHarness, size: egui::Vec2) {
+        let left = harness
+            .app()
+            .transient
+            .widget_panel_rect
+            .expect("widget panel is rendered");
+        let right = harness
+            .app()
+            .transient
+            .inspector_panel_rect
+            .expect("inspector panel is rendered");
+        let canvas = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("canvas is rendered");
+        let name_field = harness
+            .control_rect("Widget name")
+            .expect("selected widget name field is rendered");
+
+        assert!(left.width() >= WIDGET_LIST_MINIMUM_WIDTH);
+        assert!(right.width() >= INSPECTOR_MINIMUM_WIDTH);
+        assert!(left.right() <= canvas.left());
+        assert!(canvas.right() <= right.left());
+        assert!(left.left() >= 0.0 && left.right() <= size.x);
+        assert!(right.left() >= 0.0 && right.right() <= size.x);
+        assert!(canvas.top() >= 50.0 && canvas.bottom() <= size.y);
+        assert!(right.contains(name_field.center()));
+    }
+
     #[test]
     fn workspace_exposes_complete_lifecycle_controls() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
@@ -2277,6 +2404,7 @@ mod tests {
             canvas.bottom() <= 640.0,
             "canvas exceeds the window: {canvas:?}"
         );
+        assert_workspace_geometry(&harness, egui::vec2(1024.0, 640.0));
     }
 
     #[test]
@@ -2309,6 +2437,7 @@ mod tests {
             canvas.bottom() <= 800.0,
             "canvas exceeds the window: {canvas:?}"
         );
+        assert_workspace_geometry(&harness, egui::vec2(1280.0, 800.0));
     }
 
     #[test]
@@ -3080,6 +3209,342 @@ mod tests {
             vec!["Back".to_owned(), "Middle".to_owned(), "Front".to_owned()]
         );
         assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn canvas_click_selects_frontmost_overlap_and_updates_inspector() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+
+        let front = harness.widget_canvas_rect(ids[0]).expect("front hitbox");
+        let middle = harness.widget_canvas_rect(ids[1]).expect("middle hitbox");
+        let back = harness.widget_canvas_rect(ids[2]).expect("back hitbox");
+        let overlap = front.intersect(middle).intersect(back);
+        assert!(
+            overlap.is_positive(),
+            "widgets overlap: {front:?}, {middle:?}, {back:?}"
+        );
+        let back_row = harness
+            .widget_selector_rect(ids[2])
+            .expect("back widget row");
+        harness.pointer_click(back_row.center());
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[2])
+        );
+
+        harness.pointer_click(overlap.center());
+
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[0])
+        );
+        assert_eq!(
+            harness.app().transient.inspector_target,
+            Some((overlay_id, ids[0]))
+        );
+        assert!(harness.has_label(&format!("Stable widget identity: {}", ids[0])));
+    }
+
+    #[test]
+    fn obscured_widget_remains_selectable_from_its_list_row() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        let row = harness
+            .widget_selector_rect(ids[2])
+            .expect("obscured widget row");
+
+        harness.pointer_click(row.center());
+
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[2])
+        );
+        assert_eq!(
+            harness.app().transient.inspector_target,
+            Some((overlay_id, ids[2]))
+        );
+        assert!(harness.has_label(&format!("Stable widget identity: {}", ids[2])));
+        harness.frame();
+        let row_texts: Vec<String> = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            row_texts
+                .iter()
+                .any(|text| text.contains("▶") && text.contains("Back")),
+            "selected row should contain its non-color marker: {row_texts:?}"
+        );
+    }
+
+    #[test]
+    fn empty_canvas_click_clears_widget_selection() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (_overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        let empty_point = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("canvas is rendered")
+            .center();
+        assert!(ids.iter().all(|id| {
+            !harness
+                .widget_canvas_rect(*id)
+                .expect("widget hitbox")
+                .contains(empty_point)
+        }));
+
+        harness.pointer_click(empty_point);
+
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            None
+        );
+        assert_eq!(harness.app().transient.inspector_target, None);
+        assert!(harness.has_label("Overlay information"));
+    }
+
+    #[test]
+    fn canvas_selection_reveals_its_widget_row() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let overlay_id = harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .create_overlay("Live", 320, 240)
+            .unwrap();
+        let target = harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .add_widget(overlay_id, TextWidget::new("Target"))
+            .unwrap();
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_position(target, Position::new(200.0, 170.0))
+            })
+            .unwrap();
+        for index in 0..36 {
+            harness
+                .app_mut()
+                .coordinator_mut()
+                .unwrap()
+                .add_widget(overlay_id, TextWidget::new(format!("Other {index}")))
+                .unwrap();
+        }
+        harness.frame();
+
+        let panel = harness
+            .app()
+            .transient
+            .widget_panel_rect
+            .expect("widget panel is rendered");
+        let row = harness.widget_selector_rect(target).expect("target row");
+        assert!(
+            !panel.contains(row.center()),
+            "target row starts out of view"
+        );
+        let hitbox = harness.widget_canvas_rect(target).expect("target hitbox");
+
+        harness.pointer_move(hitbox.center());
+        harness.pointer_button(hitbox.center(), true);
+
+        assert_eq!(
+            harness.app().transient.pending_widget_reveal,
+            Some((overlay_id, target))
+        );
+        harness.pointer_button(hitbox.center(), false);
+        assert_eq!(harness.app().transient.pending_widget_reveal, None);
+        harness.frame();
+
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(target)
+        );
+        let panel = harness
+            .app()
+            .transient
+            .widget_panel_rect
+            .expect("widget panel is rendered");
+        let row = harness
+            .widget_selector_rect(target)
+            .expect("revealed target row");
+        assert!(
+            panel.contains(row.center()),
+            "selected row should be visible: {row:?} in {panel:?}"
+        );
+    }
+
+    #[test]
+    fn switching_overlays_by_pointer_clears_widget_selection() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let coordinator = harness.app_mut().coordinator_mut().unwrap();
+        let first = coordinator.create_overlay("First", 320, 240).unwrap();
+        coordinator
+            .add_widget(first, TextWidget::new("First widget"))
+            .unwrap();
+        let second = coordinator.create_overlay("Second", 320, 240).unwrap();
+        coordinator
+            .add_widget(second, TextWidget::new("Second widget"))
+            .unwrap();
+        harness.frame();
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_overlay_id(),
+            Some(second)
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_widget_id()
+                .is_some()
+        );
+
+        harness
+            .pointer_click_control("Overlay selector")
+            .expect("open overlay selector");
+        let first_option = harness
+            .overlay_selector_rect(first)
+            .expect("first overlay option is visible");
+        harness.pointer_click(first_option.center());
+
+        let coordinator = harness.app().coordinator().unwrap();
+        assert_eq!(coordinator.selected_overlay_id(), Some(first));
+        assert_eq!(coordinator.selected_widget_id(), None);
+        assert_eq!(harness.app().transient.inspector_target, None);
+        assert!(harness.has_label("Overlay information"));
+    }
+
+    #[test]
+    fn deleting_selected_widget_by_pointer_selects_the_same_index_fallback() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        let middle_row = harness
+            .widget_selector_rect(ids[1])
+            .expect("middle widget row");
+        harness.pointer_click(middle_row.center());
+        harness
+            .pointer_click_control("Delete widget")
+            .expect("delete selected widget");
+
+        let coordinator = harness.app().coordinator().unwrap();
+        assert!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[1])
+                .is_none()
+        );
+        assert_eq!(coordinator.selected_widget_id(), Some(ids[2]));
+        assert_eq!(
+            harness.app().transient.inspector_target,
+            Some((overlay_id, ids[2]))
+        );
+    }
+
+    #[test]
+    fn hover_outline_is_distinct_and_editor_guides_do_not_change_browser_output() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_position(ids[0], Position::new(20.0, 20.0))?;
+                overlay.set_widget_position(ids[1], Position::new(110.0, 90.0))?;
+                overlay.set_widget_position(ids[2], Position::new(220.0, 170.0))
+            })
+            .unwrap();
+        harness.frame();
+        let before = crate::browser::render(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_overlay()
+                .unwrap(),
+            0,
+        );
+        let hover = harness
+            .widget_canvas_rect(ids[2])
+            .expect("back widget hitbox")
+            .center();
+
+        harness.pointer_move(hover);
+
+        let outline_colors: Vec<egui::Color32> = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) => Some(rect.stroke.color),
+                _ => None,
+            })
+            .collect();
+        assert!(outline_colors.contains(&egui::Color32::from_rgb(38, 198, 218)));
+        assert!(outline_colors.contains(&egui::Color32::from_rgb(224, 224, 224)));
+        assert_eq!(
+            crate::browser::render(
+                harness
+                    .app()
+                    .coordinator()
+                    .unwrap()
+                    .selected_overlay()
+                    .unwrap(),
+                0,
+            ),
+            before
+        );
+
+        harness.pointer_click(hover);
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[2])
+        );
+        harness.frame();
+        let final_editor_outline = harness
+            .shapes()
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.color == HOVER_OUTLINE_COLOR
+                        || rect.stroke.color == SELECTION_OUTLINE_COLOR =>
+                {
+                    Some(rect.stroke.color)
+                }
+                _ => None,
+            })
+            .last();
+        assert_eq!(
+            final_editor_outline,
+            Some(SELECTION_OUTLINE_COLOR),
+            "selection outline should remain visible over hover"
+        );
+        assert_eq!(
+            crate::browser::render(
+                harness
+                    .app()
+                    .coordinator()
+                    .unwrap()
+                    .selected_overlay()
+                    .unwrap(),
+                0,
+            ),
+            before
+        );
     }
 
     #[test]
