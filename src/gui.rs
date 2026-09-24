@@ -20,6 +20,9 @@ const WIDGET_LIST_INITIAL_WIDTH: f32 = 220.0;
 const WIDGET_LIST_MINIMUM_WIDTH: f32 = 180.0;
 const INSPECTOR_INITIAL_WIDTH: f32 = 280.0;
 const INSPECTOR_MINIMUM_WIDTH: f32 = 260.0;
+const WORKSPACE_ITEM_SPACING: f32 = 8.0;
+const WORKSPACE_PANEL_PADDING: f32 = 12.0;
+const WORKSPACE_BODY_TEXT_SIZE: f32 = 14.0;
 const USER_DOCUMENTATION_URL: &str =
     "https://github.com/marcybelardo/chikachika/blob/main/docs/user/README.md";
 
@@ -51,6 +54,8 @@ struct TransientState {
     overlay_selector_rects: HashMap<OverlayId, egui::Rect>,
     #[cfg(test)]
     control_rects: HashMap<String, egui::Rect>,
+    #[cfg(test)]
+    layer_action_enabled: HashMap<&'static str, bool>,
     #[cfg(test)]
     preview_rect: Option<egui::Rect>,
     #[cfg(test)]
@@ -285,7 +290,8 @@ impl ChikachikaApp {
     }
 
     fn render_workspace(&mut self, context: &egui::Context) {
-        context.set_visuals(egui::Visuals::dark());
+        apply_workspace_style(context);
+        let style = context.style();
         let coordinator = self
             .coordinator
             .as_mut()
@@ -603,10 +609,12 @@ impl ChikachikaApp {
             .default_width(WIDGET_LIST_INITIAL_WIDTH)
             .min_width(WIDGET_LIST_MINIMUM_WIDTH)
             .max_width(320.0)
+            .frame(workspace_side_panel_frame(&style))
             .show(context, |ui| {
                 #[cfg(test)]
                 {
-                    transient.widget_panel_rect = Some(ui.max_rect());
+                    transient.widget_panel_rect =
+                        Some(ui.max_rect().expand(WORKSPACE_PANEL_PADDING));
                 }
                 ui.heading("Widgets");
                 if let Some(id) = coordinator.selected_overlay_id() {
@@ -622,10 +630,12 @@ impl ChikachikaApp {
             .default_width(INSPECTOR_INITIAL_WIDTH)
             .min_width(INSPECTOR_MINIMUM_WIDTH)
             .max_width(360.0)
+            .frame(workspace_side_panel_frame(&style))
             .show(context, |ui| {
                 #[cfg(test)]
                 {
-                    transient.inspector_panel_rect = Some(ui.max_rect());
+                    transient.inspector_panel_rect =
+                        Some(ui.max_rect().expand(WORKSPACE_PANEL_PADDING));
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if let Some(id) = coordinator.selected_overlay_id() {
@@ -636,39 +646,60 @@ impl ChikachikaApp {
                     }
                 });
             });
+        egui::CentralPanel::default()
+            .frame(workspace_central_panel_frame(&style))
+            .show(context, |ui| {
+                let Some(overlay) = coordinator.selected_overlay() else {
+                    transient.preview_drag = None;
+                    transient.inspector_target = None;
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Canvas preview");
+                        ui.add_space(16.0);
+                        ui.label("Create or select an overlay to begin composing.");
+                    });
+                    return;
+                };
 
-        egui::CentralPanel::default().show(context, |ui| {
-            let Some(overlay) = coordinator.selected_overlay() else {
-                transient.preview_drag = None;
-                transient.inspector_target = None;
+                let id = overlay.id();
+                let canvas = overlay.canvas();
                 ui.vertical_centered(|ui| {
                     ui.heading("Canvas preview");
-                    ui.add_space(16.0);
-                    ui.label("Create or select an overlay to begin composing.");
+                    ui.label("Drag the selected widget to move it");
+                    ui.add_space(8.0);
+                    render_collection_preview(ui, coordinator, transient, id);
+                    ui.add_space(4.0);
+                    ui.weak(format!(
+                        "{} × {} transparent output",
+                        canvas.width(),
+                        canvas.height()
+                    ));
                 });
-                return;
-            };
-
-            let id = overlay.id();
-            let canvas = overlay.canvas();
-            ui.vertical_centered(|ui| {
-                ui.heading("Canvas preview");
-                ui.label("Drag the selected widget to move it");
-                ui.add_space(8.0);
-                render_collection_preview(ui, coordinator, transient, id);
-                ui.add_space(4.0);
-                ui.weak(format!(
-                    "{} × {} transparent output",
-                    canvas.width(),
-                    canvas.height()
-                ));
             });
-        });
 
         render_create_dialog(context, coordinator, transient);
         render_rename_dialog(context, coordinator, transient);
         render_delete_dialog(context, coordinator, transient);
     }
+}
+
+fn apply_workspace_style(context: &egui::Context) {
+    let mut style = context.style().as_ref().clone();
+    style.visuals = egui::Visuals::dark();
+    style.spacing.item_spacing = egui::vec2(WORKSPACE_ITEM_SPACING, WORKSPACE_ITEM_SPACING);
+    style.spacing.window_margin = egui::Margin::same(WORKSPACE_PANEL_PADDING);
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        egui::FontId::proportional(WORKSPACE_BODY_TEXT_SIZE),
+    );
+    context.set_style(style);
+}
+
+fn workspace_side_panel_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::side_top_panel(style).inner_margin(WORKSPACE_PANEL_PADDING)
+}
+
+fn workspace_central_panel_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::central_panel(style).inner_margin(WORKSPACE_PANEL_PADDING)
 }
 
 impl Default for ChikachikaApp {
@@ -910,6 +941,13 @@ fn render_selected_widget_inspector(
         ui.label("Select a widget from the frontmost-first list to edit it.");
         return;
     };
+    let widget_count = overlay.widgets().len();
+    let selected_index = overlay
+        .widgets()
+        .iter()
+        .position(|item| item.id() == widget.id());
+    let can_move_forward = selected_index.is_some_and(|index| index > 0);
+    let can_move_backward = selected_index.is_some_and(|index| index + 1 < widget_count);
 
     let mut values = TextEditorValues::from_widget(&widget);
     let original = values.clone();
@@ -937,7 +975,11 @@ fn render_selected_widget_inspector(
         }
     });
     ui.horizontal(|ui| {
-        let forward = ui.button("Forward");
+        let forward = ui.add_enabled(can_move_forward, egui::Button::new("Forward"));
+        #[cfg(test)]
+        transient
+            .layer_action_enabled
+            .insert("Forward", forward.enabled());
         #[cfg(test)]
         transient
             .control_rects
@@ -946,7 +988,11 @@ fn render_selected_widget_inspector(
             let _ = move_selected_text_widget(Some(coordinator), true);
             command_changed_selection = true;
         }
-        let backward = ui.button("Backward");
+        let backward = ui.add_enabled(can_move_backward, egui::Button::new("Backward"));
+        #[cfg(test)]
+        transient
+            .layer_action_enabled
+            .insert("Backward", backward.enabled());
         #[cfg(test)]
         transient
             .control_rects
@@ -1944,6 +1990,7 @@ impl ScenarioHarness {
             self.app.transient.widget_selector_rects.clear();
             self.app.transient.overlay_selector_rects.clear();
             self.app.transient.control_rects.clear();
+            self.app.transient.layer_action_enabled.clear();
             self.app.transient.preview_rect = None;
         }
         let app = &mut self.app;
@@ -2080,6 +2127,10 @@ impl ScenarioHarness {
     /// Returns a named control rectangle emitted by the last frame.
     pub fn control_rect(&self, label: &str) -> Option<egui::Rect> {
         self.app.transient.control_rects.get(label).copied()
+    }
+
+    fn layer_action_is_enabled(&self, label: &'static str) -> Option<bool> {
+        self.app.transient.layer_action_enabled.get(label).copied()
     }
 
     /// Activates a semantic adapter action by exact label and renders the next
@@ -2453,6 +2504,113 @@ mod tests {
         assert_eq!(WIDGET_LIST_MINIMUM_WIDTH, 180.0);
         assert_eq!(INSPECTOR_INITIAL_WIDTH, 280.0);
         assert_eq!(INSPECTOR_MINIMUM_WIDTH, 260.0);
+    }
+
+    #[test]
+    fn workspace_style_matches_fdr_spacing_and_typography_targets() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.frame();
+
+        let style = harness.context.style();
+        assert_eq!(style.spacing.item_spacing, egui::vec2(8.0, 8.0));
+        assert_eq!(style.spacing.window_margin, egui::Margin::same(12.0));
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Body)
+                .expect("body text style")
+                .size,
+            14.0
+        );
+        assert_eq!(
+            workspace_side_panel_frame(&style).inner_margin,
+            egui::Margin::same(12.0)
+        );
+        assert_eq!(
+            workspace_central_panel_frame(&style).inner_margin,
+            egui::Margin::same(12.0)
+        );
+    }
+
+    #[test]
+    fn inspector_layer_controls_reflect_available_moves() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (_overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+
+        assert_eq!(harness.layer_action_is_enabled("Forward"), Some(false));
+        assert_eq!(harness.layer_action_is_enabled("Backward"), Some(true));
+
+        let middle_row = harness
+            .widget_selector_rect(ids[1])
+            .expect("middle widget row");
+        harness.pointer_click(middle_row.center());
+        assert_eq!(harness.layer_action_is_enabled("Forward"), Some(true));
+        assert_eq!(harness.layer_action_is_enabled("Backward"), Some(true));
+
+        let back_row = harness
+            .widget_selector_rect(ids[2])
+            .expect("back widget row");
+        harness.pointer_click(back_row.center());
+        assert_eq!(harness.layer_action_is_enabled("Forward"), Some(true));
+        assert_eq!(harness.layer_action_is_enabled("Backward"), Some(false));
+    }
+
+    #[test]
+    fn side_panel_divider_drag_resizes_and_refits_canvas_at_minimum_size() {
+        let size = egui::vec2(1024.0, 640.0);
+        let mut harness =
+            ScenarioHarness::new_with_size(BootstrapOutcome::Ready(ready_app()), size);
+        let coordinator = harness.app_mut().coordinator_mut().unwrap();
+        let overlay_id = coordinator
+            .create_overlay("Wide", 1280, 720)
+            .expect("create wide overlay");
+        coordinator
+            .add_widget(overlay_id, TextWidget::new("Selected"))
+            .expect("add selected widget");
+        harness.frame();
+
+        let original_panel = harness
+            .app()
+            .transient
+            .widget_panel_rect
+            .expect("widget panel is rendered");
+        let original_canvas = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("canvas is rendered");
+        let divider = egui::pos2(original_panel.right(), original_panel.center().y);
+        let destination = divider + egui::vec2(100.0, 0.0);
+
+        harness.pointer_move(divider);
+        harness.pointer_button(divider, true);
+        harness.pointer_move(destination);
+        harness.frame();
+        harness.pointer_button(destination, false);
+        harness.frame();
+
+        let resized_panel = harness
+            .app()
+            .transient
+            .widget_panel_rect
+            .expect("resized widget panel is rendered");
+        let resized_canvas = harness
+            .app()
+            .transient
+            .preview_rect
+            .expect("resized canvas is rendered");
+        assert!(
+            resized_panel.width() > original_panel.width() + 40.0,
+            "drag should resize the widget panel: {original_panel:?} -> {resized_panel:?}"
+        );
+        assert!(
+            resized_canvas.width() < original_canvas.width(),
+            "canvas should refit after the center area shrinks: {original_canvas:?} -> {resized_canvas:?}"
+        );
+        let canvas_aspect = resized_canvas.width() / resized_canvas.height();
+        assert!((canvas_aspect - 1280.0 / 720.0).abs() < 0.01);
+        assert_workspace_geometry(&harness, size);
     }
 
     #[test]
@@ -3566,6 +3724,7 @@ mod tests {
                 overlay.set_widget_position(ids[2], Position::new(220.0, 170.0))
             })
             .unwrap();
+        harness.frame();
         harness.frame();
         let before = crate::browser::render(
             harness
