@@ -1375,7 +1375,7 @@ fn render_canvas_preview(
         let response = ui.interact(
             hitbox,
             ui.make_persistent_id(("preview-text", overlay_id, widget.id())),
-            egui::Sense::drag(),
+            egui::Sense::click_and_drag(),
         );
         if selected_widget_id == Some(widget.id()) {
             #[cfg(test)]
@@ -1393,7 +1393,9 @@ fn render_canvas_preview(
         {
             pressed_widget = Some((widget.id(), region_origin, pointer));
         }
-        if response.clicked() {
+        // The press frame already selects/reveals this widget; avoid queuing
+        // the same selection a second time on the release frame.
+        if response.clicked() && !drag_matches(*drag, overlay_id, widget.id()) {
             selection = Some(PreviewSelection::Widget(widget.id()));
         }
         if response.dragged()
@@ -2025,6 +2027,24 @@ impl ScenarioHarness {
         self.pointer_move(position);
         self.pointer_button(position, true);
         self.pointer_button(position, false);
+    }
+
+    fn pointer_click_in_single_frame(&mut self, position: egui::Pos2) {
+        self.frame_events(vec![
+            egui::Event::PointerMoved(position),
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
     }
 
     /// Sends a real egui key event.
@@ -3495,7 +3515,7 @@ mod tests {
     }
 
     #[test]
-    fn canvas_click_selects_a_separate_caption_and_renders_its_inspector() {
+    fn single_frame_canvas_click_selects_a_separate_caption_and_renders_its_inspector() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
         let coordinator = harness.app_mut().coordinator_mut().unwrap();
         let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
@@ -3517,8 +3537,8 @@ mod tests {
                 overlay_id,
                 TextWidget::with_properties(
                     "Light caption",
-                    Position::new(20.0, 130.0),
-                    16.0,
+                    Position::new(100.0, 130.0),
+                    12.0,
                     Color::white(),
                     Alignment::Left,
                 )
@@ -3538,11 +3558,15 @@ mod tests {
             "caption hit should not overlap the selected foreground"
         );
 
-        harness.pointer_click(caption_hitbox.center());
+        harness.pointer_click_in_single_frame(caption_hitbox.center());
 
         assert_eq!(
             harness.app().coordinator().unwrap().selected_widget_id(),
             Some(caption)
+        );
+        assert_eq!(
+            harness.app().transient.inspector_target,
+            Some((overlay_id, caption))
         );
         harness.frame();
         let rendered_text: Vec<String> = harness
@@ -3557,6 +3581,11 @@ mod tests {
             rendered_text
                 .iter()
                 .any(|text| text.contains(&caption.to_string()))
+        );
+        assert!(
+            rendered_text
+                .iter()
+                .any(|text| text.contains("▶ Light caption"))
         );
         assert!(
             harness.shapes().iter().any(|shape| matches!(
