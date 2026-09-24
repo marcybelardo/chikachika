@@ -4,14 +4,14 @@
 
 The Browser Source URL is intentionally hidden until the local server has
 started successfully and the selected overlay is registered. Check the status
-and error text in Chikachika’s workspace and **Local server settings** panel.
+and error text in Chikachika’s workspace and **Local server settings** section.
 
 If the configured port is occupied, Chikachika keeps the workspace and saved
 data intact but does not serve a URL. It does not silently choose an alternate
 port. To recover:
 
 1. Close the other local application using the configured port, or enter an
-   available port from `1` through `65535` in **Local server settings**.
+   available port from `1` through `65535` in the expanded **Local server settings** section.
 2. Click **Save port for next launch** if you changed the value.
 3. Restart Chikachika. A changed port does not take effect in the current
    server session.
@@ -32,7 +32,7 @@ The settings file is a separate format-1 envelope in the platform config-local
 directory. Back up the file, repair or move it aside yourself, and restart
 Chikachika. A missing settings file uses `127.0.0.1:51737`.
 
-The settings path is shown in the **Local server settings** panel. The usual
+Expand the **Local server settings** section in the compact status area to view the settings path. The usual
 platform locations are listed in [Where Chikachika saves data](getting-started.md#where-chikachika-saves-data).
 
 ## Saved overlays do not appear

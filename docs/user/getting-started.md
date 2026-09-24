@@ -63,17 +63,20 @@ cargo run
 
 Chikachika starts its local server before opening the workspace. With missing
 settings, the server uses the loopback address `127.0.0.1` and port `51737`.
-The workspace shows the active server state and configured port. A Browser
-Source URL becomes available only after the server is ready and an overlay is
-selected and registered.
+The workspace opens at 1280×800 logical pixels and has a 1024×640 minimum. A
+resizable widget list and inspector flank the center canvas, which fits the
+available space while preserving its aspect ratio. A Browser Source URL becomes
+available only after the server is ready and an overlay is selected and
+registered.
 
 ## Port settings and restart behavior
 
-The **Local server settings** panel accepts a port from `1` through `65535`.
-Click **Save port for next launch** after entering a new value. The running
-server keeps its current port; the new value is used only after restarting
-Chikachika. Update any OBS Browser Source URL after that restart by copying the
-new exact URL from the workspace.
+Expand the collapsed **Local server settings** section in the workspace status
+area to enter a port from `1` through `65535`. Click **Save port for next
+launch** after changing it. The running server keeps its current port; the new
+value is used only after restarting Chikachika. Update any OBS Browser Source
+URL after that restart by copying the new exact URL from the workspace. The
+separate native Settings window is planned for issue #25.
 
 The server is loopback-only: it is available on the same computer, not as a LAN
 or internet service. If the configured port is already occupied, Chikachika
@@ -85,8 +88,8 @@ for recovery steps.
 
 Chikachika keeps overlay documents and application settings in separate files.
 The exact resolved locations are also shown by the application where relevant:
-the settings panel surfaces the settings path, and blocked overlay startup
-surfaces the overlay source path.
+the expanded Local server settings section surfaces the settings path, and
+blocked overlay startup surfaces the overlay source path.
 
 | Platform | Overlay documents | Server settings |
 | --- | --- | --- |

@@ -5,26 +5,48 @@ an overlay in the native workspace, copy its stable browser-source URL, and use
 it in OBS. The project is pre-release and currently runs from source on macOS
 and Linux.
 
-## Current issue22 checkpoint
+## Current source checkpoints
 
-The current source checkpoint has an ordered collection of zero or more text
-widgets per overlay. The native editor can add, name, edit, duplicate, delete,
-and move widgets forward or backward; widget IDs remain stable across those
-operations. The model keeps index 0 frontmost, while the native preview paints
-back-to-front. A selected widget is owned by the application coordinator, not
-by the GUI.
+Issue #22 provides an ordered collection of zero or more text widgets per
+overlay. The native editor can add, name, edit, duplicate, delete, and move
+widgets one adjacent layer step at a time. Stable IDs and durable widget
+properties survive format-2 save/load; selection and delivery revisions do not.
+Format-1 overlay documents are not migrated: an incompatible source blocks
+startup and is never silently replaced. Server settings use a separate
+format-1 `settings.json` file.
 
-Overlay documents use format 2 in `overlays.json`. Format 2 stores the complete
-ordered collection and durable widget properties, but not selection, delivery
-revisions, or history. There is no format-1 overlay migration: an incompatible
-source blocks startup and is never silently replaced. Server settings remain a
-separate format-1 `settings.json` file.
+Issue #23 adds a three-panel editor: a resizable frontmost-first widget list, a
+fit-to-space canvas that preserves its aspect ratio, and a resizable inspector.
+The initial window size is 1280×800 logical pixels, with a 1024×640 minimum.
+List, canvas, and inspector use one coordinator-owned selection. Headless
+tests exercise frontmost overlap selection, empty-canvas clearing, row reveal,
+and fast clicks on a separate caption. Native QA confirmed the caption click
+updates its selected row and inspector.
+Each row has a text type indicator and a Rename action. Overlay switching and
+lifecycle controls stay in a compact top strip.
 
-This checkpoint does not make the 0.0.2 milestone complete. The broader
-workspace layout and overlap behavior (#23), history and close recovery (#24),
-the native Settings window (#25), bundled font assets and fidelity (#26), and
-macOS/Linux OBS validation (#27) remain incomplete. Font IDs are persisted and
-shown by the editor, but no font files are bundled yet.
+The current menus expose File > Create Overlay and Save; Edit > Add Text,
+Duplicate, Delete, Forward, and Backward; View > Fit Canvas; and Help > User
+Documentation. The compact status area shows save/server state, errors, and
+readiness-gated Copy URL and Open output actions. Its Local server settings
+section is collapsed by default; the separate native Settings window is #25
+work.
+
+Headless egui tests cover shared selection, fast canvas clicks, overlapping
+widgets, divider resizing, supported menus, readiness gating, and canvas fit at
+1024×640 and 1280×800. Native macOS review confirmed light, dark, small, and
+overlapping text; clear selected and hover outlines; disabled controls; error
+visibility; and a quick canvas click updating the row and inspector. The
+1024×640 QA variant encountered an occupied test port, so output readiness was
+checked at the larger size only.
+
+## Remaining 0.0.2 work
+
+Undo/redo, focus-aware shortcuts, and unsaved-close recovery remain #24 work.
+The separate native Settings window remains #25 work. Bundled font assets and
+fidelity remain #26 work; font IDs are persisted and selectable, but no font
+files are bundled yet. macOS/Linux OBS and resource verification remain #27
+work. Release publication is tracked separately from milestone completion.
 
 ## Run from source
 
@@ -50,10 +72,10 @@ platform prerequisites and saved-data locations.
 4. Add that URL to OBS as a Browser Source.
 
 The browser output is transparent and is the final rendering authority. The
-browser checkpoint consumes complete `widgets`-array snapshots, validates the
+browser client consumes complete `widgets`-array snapshots, validates the
 whole snapshot before mutation, reconciles DOM nodes by stable widget ID, and
-keeps reverse DOM order so model index 0 paints frontmost. `Number.MAX_SAFE_INTEGER`
-is the largest accepted browser delivery revision.
+keeps reverse DOM order so model index 0 paints frontmost.
+`Number.MAX_SAFE_INTEGER` is the largest accepted browser delivery revision.
 
 See the [user guide](docs/user/README.md) for the overlay workflow, OBS setup,
 path locations, backup recovery, port settings, and troubleshooting.
@@ -81,5 +103,5 @@ to Rust. CI runs the Rust checks on Ubuntu and macOS.
 - [Feature decisions](docs/fdr/INDEX.md)
 - [Canonical terminology](docs/GLOSSARY.md)
 - [`0.0.1` milestone evidence](docs/TODO-0-0-1.md)
-- [`0.0.2` milestone and issue22 checkpoint](docs/TODO-0-0-2.md)
+- [`0.0.2` milestone and issue22/issue23 checkpoints](docs/TODO-0-0-2.md)
 - [Release process](docs/RELEASING.md)

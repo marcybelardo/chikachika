@@ -850,7 +850,7 @@ class Milestone002DecisionContractTests(unittest.TestCase):
 
     def test_002_milestone_contract_links(self):
         milestone = (ROOT / "docs/TODO-0-0-2.md").read_text(encoding="utf-8")
-        self.assertIn("**Status:** In progress — issue22 checkpoint delivered; remaining implementation pending", milestone)
+        self.assertIn("**Status:** In progress — issue22 checkpoint delivered; issue23 layout and contrast review complete", milestone)
         for path in (
             "fdr/FDR-003-multi-widget-composition-workspace.md",
             "fdr/FDR-004-bundled-offline-text-fonts.md",
@@ -865,19 +865,21 @@ class Milestone002DecisionContractTests(unittest.TestCase):
             self.assertIn(f"| #{issue} |", milestone, issue)
         product_section = milestone[milestone.index("## Product Requirements"):milestone.index("## Confirmed Scope")]
         quality_section = milestone[milestone.index("## Quality Requirements"):milestone.index("## Explicitly Out of Scope")]
-        # Issue22 has delivered the narrow model/persistence/browser/docs rows;
-        # remaining future workspace, history, font, Settings-window, and OBS
-        # requirements must still stay unchecked.
+        # Issue22 model/persistence/browser work and issue23 workspace
+        # implementation are delivered; visual follow-up and future
+        # history/font/Settings-window/OBS requirements remain incomplete.
         delivered = "\n".join(
             line for line in product_section.splitlines() + quality_section.splitlines()
             if line.startswith("- [x]")
         )
         self.assertIn("ordered widget model", delivered)
         self.assertIn("Save and restore", delivered)
+        self.assertIn("A menu bar provides File, Edit, View, and Help actions", delivered)
+        self.assertIn("The left sidebar lists widgets", delivered)
         self.assertNotIn("Undo/redo", delivered)
         self.assertNotIn("bundled collection", delivered)
         self.assertNotIn("separate native window", delivered)
-        self.assertNotIn("OBS", delivered)
+        self.assertNotIn("Exercise creation, composition, saving, restart, and OBS browser-source use", delivered)
         self.assertIn("they do not exercise runtime features", milestone)
 
 
@@ -921,7 +923,7 @@ class Issue22DocumentationCheckpointTests(unittest.TestCase):
             "overlays.json",
             "selection",
             "delivery revisions",
-            "There is no format-1 overlay migration",
+            "Format-1 overlay documents are not migrated",
             "incompatible existing store blocks startup",
             "Separate format-1 `settings.json`",
             "ProjectDirs::from(\"\", \"\", \"Chikachika\")",
@@ -937,7 +939,7 @@ class Issue22DocumentationCheckpointTests(unittest.TestCase):
         self.assertIn("$HOME/.config/chikachika/settings.json", getting_started)
         self.assertIn("$HOME/Library/Application Support/Chikachika/overlays.json", getting_started)
         self.assertIn("$HOME/Library/Application Support/Chikachika/settings.json", getting_started)
-        self.assertIn("settings panel surfaces the settings path", getting_started)
+        self.assertIn("expanded Local server settings section surfaces the settings path", getting_started)
         self.assertIn("blocked overlay startup", getting_started)
         self.assertIn("surfaces the overlay source path", getting_started)
 
@@ -992,6 +994,75 @@ class Issue22DocumentationCheckpointTests(unittest.TestCase):
                 self.assertIn(test_name, documentation, test_name)
                 self.assertRegex(source_text, rf"(?m)^\s*fn {test_name}\s*\(", f"{source}: {test_name}")
         self.assertIn("issue22_documentation_checkpoint", milestone + self._read("README.md"))
+
+
+ISSUE23_TEST_SOURCE_MANIFEST = {
+    "src/gui.rs": (
+        "native_window_and_sidebar_sizes_match_the_workspace_contract",
+        "workspace_keeps_canvas_inside_the_minimum_window",
+        "workspace_keeps_canvas_inside_a_larger_desktop_window",
+        "side_panel_divider_drag_resizes_and_refits_canvas_at_minimum_size",
+        "workspace_style_matches_fdr_spacing_and_typography_targets",
+        "inspector_layer_controls_reflect_available_moves",
+        "issue_23_menus_run_their_supported_actions",
+        "output_actions_wait_for_server_readiness",
+        "widget_row_rename_focuses_the_existing_inspector_field",
+        "canvas_click_selects_frontmost_overlap_and_updates_inspector",
+        "single_frame_canvas_click_selects_a_separate_caption_and_renders_its_inspector",
+        "obscured_widget_remains_selectable_from_its_list_row",
+        "empty_canvas_click_repaints_inspector_and_selection_outline",
+        "canvas_selection_reveals_its_widget_row",
+        "switching_overlays_by_pointer_clears_widget_selection",
+        "deleting_selected_widget_by_pointer_selects_the_same_index_fallback",
+        "hover_outline_is_distinct_and_editor_guides_do_not_change_browser_output",
+    ),
+}
+
+
+class Issue23DocumentationCheckpointTests(unittest.TestCase):
+    """Tie issue23 documentation status to named GUI evidence and manual findings."""
+
+    def _read(self, relative):
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_issue23_documentation_checkpoint(self):
+        milestone = self._read("docs/TODO-0-0-2.md")
+        readme = self._read("README.md")
+        guide = self._read("docs/user/README.md")
+        workflow = self._read("docs/user/overlay-workflow.md")
+        architecture = self._read("docs/architecture/INDEX.md")
+        all_docs = "\n".join((milestone, readme, guide, workflow, architecture))
+        normalized = re.sub(r"\s+", " ", all_docs)
+
+        for anchor in (
+            "1280×800",
+            "1024×640",
+            "resizable frontmost-first widget list",
+            "aspect-preserving canvas",
+            "File > Create Overlay/Save",
+            "Edit > Add Text/Duplicate/Delete/Forward/Backward",
+            "View > Fit Canvas",
+            "Help > User Documentation",
+            "Local server settings collapsed by default",
+            "readiness-gated Copy URL/Open output",
+        ):
+            self.assertIn(anchor, normalized, anchor)
+
+        self.assertIn("overlapping canvas click retained frontmost selection", normalized)
+        self.assertIn("Headless pointer tests confirm canvas clicks", milestone)
+        self.assertIn("separate QA variant initialized at 1024×640", normalized)
+        self.assertIn("server readiness was not checked in that variant", normalized)
+        self.assertIn("issue23 layout and contrast review complete", milestone)
+        self.assertNotIn("the #23 resizable three-panel layout and overlap behavior remain incomplete", normalized)
+
+    def test_issue23_documentation_checkpoint_names_gui_evidence(self):
+        milestone = self._read("docs/TODO-0-0-2.md")
+        gui_source = self._read("src/gui.rs")
+        for test_names in ISSUE23_TEST_SOURCE_MANIFEST.values():
+            for test_name in test_names:
+                self.assertIn(test_name, milestone, test_name)
+                self.assertRegex(gui_source, rf"(?m)^\s*fn {test_name}\s*\(", test_name)
+        self.assertIn("issue23_documentation_checkpoint", milestone)
 
 
 class CollaborationArtifactContractTests(unittest.TestCase):

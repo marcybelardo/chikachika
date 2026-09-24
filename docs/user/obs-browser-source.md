@@ -63,7 +63,17 @@ contains the exact copied URL. Then see [Troubleshooting](troubleshooting.md).
 
 ## Scope note
 
-This checkpoint does not claim the final 0.0.2 resizable workspace, overlap
-pointer-selection polish, session history, separate native Settings window,
-bundled font assets/fidelity, or macOS/Linux OBS certification. Those remain
-tracked in [TODO-0-0-2](../TODO-0-0-2.md).
+The three-panel workspace and shared list/canvas/inspector selection
+implementation are covered by headless UI tests for overlap, row reveal,
+selection clearing, readiness-gated URL actions, and canvas geometry at the
+documented sizes. Corrected-build visual review at 1280×800 confirmed contrast
+for near-black and white overlapping text and visibility of all panels. A
+separate QA variant initialized at 1024×640 confirmed the panels, controls,
+fitted canvas, overlapping light/dark text, and status/error area. Server
+readiness was not verified in that variant because its test port was occupied.
+An overlapping canvas hit retained the frontmost selection in manual QA.
+Session history, focus-aware
+shortcuts, and unsaved-close recovery remain #24 work; the separate native
+Settings window remains #25 work; bundled font assets/fidelity remain #26 work;
+and macOS/Linux OBS certification remains #27 work tracked in
+[TODO-0-0-2](../TODO-0-0-2.md).
