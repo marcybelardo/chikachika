@@ -41,14 +41,13 @@ window remains #25 work.
 The browser and OBS output is authoritative. The native preview can differ in
 font metrics or line breaks. The accepted font IDs are `noto-sans` and
 `jetbrains-mono`, but no font files are bundled yet. Automated UI checks cover
-issue23 pointer and layout behavior. Corrected-build visual review at
-1280×800 confirmed contrast for near-black and white overlapping text and
-visibility of all panels. An overlapping canvas hit retained the frontmost
-selection as expected. A separate QA variant initialized at 1024×640 confirmed panels, controls,
-the fitted canvas, overlapping light/dark text, and the status/error area.
-Server readiness was not verified in that variant because its test port was
-occupied. Bundled font
-files/fidelity remain #26 work, and macOS/Linux OBS certification remains #27
+issue23 pointer and layout behavior. Native macOS review at 1280×800 and in
+a separate 1024×640 QA build confirmed all panels, the fitted canvas, and
+light, dark, small, and overlapping text. A quick canvas click selected a
+separate caption and updated its row and inspector. Server readiness was not
+verified in the minimum-size variant because its test port was occupied.
+Bundled font files/fidelity remain #26 work, and macOS/Linux OBS
+certification remains #27
 work tracked in [the milestone checklist](../TODO-0-0-2.md).
 
 ## Related project documentation

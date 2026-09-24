@@ -37,7 +37,7 @@ The focused Python contract is `issue22_documentation_checkpoint` in `tests/test
 
 ### Named issue23 evidence
 
-The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py`. The GUI tests named by this checkpoint are `native_window_and_sidebar_sizes_match_the_workspace_contract`, `workspace_keeps_canvas_inside_the_minimum_window`, `workspace_keeps_canvas_inside_a_larger_desktop_window`, `issue_23_menus_run_their_supported_actions`, `output_actions_wait_for_server_readiness`, `widget_row_rename_focuses_the_existing_inspector_field`, `canvas_click_selects_frontmost_overlap_and_updates_inspector`, `canvas_click_selects_a_separate_caption_and_renders_its_inspector`, `obscured_widget_remains_selectable_from_its_list_row`, `empty_canvas_click_repaints_inspector_and_selection_outline`, `canvas_selection_reveals_its_widget_row`, `switching_overlays_by_pointer_clears_widget_selection`, `deleting_selected_widget_by_pointer_selects_the_same_index_fallback`, and `hover_outline_is_distinct_and_editor_guides_do_not_change_browser_output`. The documentation test ties these names to `src/gui.rs`; none of these headless tests substitutes for the manual visual review above.
+The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py`. The GUI tests named by this checkpoint are `native_window_and_sidebar_sizes_match_the_workspace_contract`, `workspace_keeps_canvas_inside_the_minimum_window`, `workspace_keeps_canvas_inside_a_larger_desktop_window`, `side_panel_divider_drag_resizes_and_refits_canvas_at_minimum_size`, `workspace_style_matches_fdr_spacing_and_typography_targets`, `inspector_layer_controls_reflect_available_moves`, `issue_23_menus_run_their_supported_actions`, `output_actions_wait_for_server_readiness`, `widget_row_rename_focuses_the_existing_inspector_field`, `canvas_click_selects_frontmost_overlap_and_updates_inspector`, `single_frame_canvas_click_selects_a_separate_caption_and_renders_its_inspector`, `obscured_widget_remains_selectable_from_its_list_row`, `empty_canvas_click_repaints_inspector_and_selection_outline`, `canvas_selection_reveals_its_widget_row`, `switching_overlays_by_pointer_clears_widget_selection`, `deleting_selected_widget_by_pointer_selects_the_same_index_fallback`, and `hover_outline_is_distinct_and_editor_guides_do_not_change_browser_output`. The documentation test ties these names to `src/gui.rs`; none of these headless tests substitutes for the manual visual review below.
 
 ## Product Requirements
 
@@ -104,13 +104,13 @@ The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py
 
 ### Visual clarity
 
-- [ ] Establish a coherent treatment of spacing, typography, panel headings, control grouping, and selected/hover/disabled/error states.
-- [ ] Visually separate the application panels, canvas surroundings, and transparent output area so widget boundaries are understandable.
-- [ ] Verify readability and selection visibility with light, dark, small, and overlapping widget content.
+- [x] Use 8-point item spacing, 12-point padding in the three workspace panels, 14-point body text, clear headings and groups, and distinct selected/hover/disabled/error states.
+- [x] Visually separate the application panels, canvas surroundings, and transparent output area so widget boundaries are understandable.
+- [x] Verify readability and selection visibility with light, dark, small, and overlapping widget content.
 - [x] Review the layout with representative overlays at the minimum window size and a larger desktop size. The 1280×800 build and separate 1024×640 QA variant both showed all three panels and the fitted canvas.
-- [ ] Deliver one improved, readable appearance; selectable light/dark/system themes are outside this milestone.
+- [x] Deliver one improved, readable dark appearance; selectable light/dark/system themes are outside this milestone.
 
-**Progress note:** Corrected-build visual review confirmed text contrast and panel visibility at 1280×800. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area; server readiness was not verified there because its test port was occupied. The remaining unchecked items still need a complete visual review of hover, selection, disabled, and error treatments.
+**Progress note:** Native macOS review at 1280×800 and a separate 1024×640 QA variant confirmed the three panels, fitted canvas, light/dark/small overlapping content, cyan selected outline, distinct hover, muted disabled controls, and red server error treatment. A quick canvas click in the final 1280×800 build selected a separate 12-point caption and updated its row and inspector. The minimum-size variant's test port was occupied, so output readiness was not checked there; macOS/Linux OBS validation remains #27 work.
 
 ### Persistence and live browser output
 

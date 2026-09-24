@@ -19,9 +19,9 @@ Issue #23 adds a three-panel editor: a resizable frontmost-first widget list, a
 fit-to-space canvas that preserves its aspect ratio, and a resizable inspector.
 The initial window size is 1280×800 logical pixels, with a 1024×640 minimum.
 List, canvas, and inspector use one coordinator-owned selection. Headless
-tests exercise frontmost overlap selection, empty-canvas clearing, and row
-reveal and a separate caption click; manual QA confirmed that an overlapping
-canvas hit retains the frontmost selection.
+tests exercise frontmost overlap selection, empty-canvas clearing, row reveal,
+and fast clicks on a separate caption. Native QA confirmed the caption click
+updates its selected row and inspector.
 Each row has a text type indicator and a Rename action. Overlay switching and
 lifecycle controls stay in a compact top strip.
 
@@ -32,15 +32,13 @@ readiness-gated Copy URL and Open output actions. Its Local server settings
 section is collapsed by default; the separate native Settings window is #25
 work.
 
-Headless egui tests cover shared selection, overlapping and obscured widgets,
-row reveal, selection clearing, supported menu actions, readiness gating, and
-canvas geometry at 1024×640 and 1280×800. Corrected-build visual review at
-1280×800 confirmed near-black and white overlapping text legible on the lighter
-checkerboard with all panels visible. A separate QA variant initialized at
-1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark
-text, and status/error area. Its test port was already occupied, so server
-readiness was not verified there. List selection showed the inspector and cyan
-outline; an overlapping canvas hit retained the frontmost selection.
+Headless egui tests cover shared selection, fast canvas clicks, overlapping
+widgets, divider resizing, supported menus, readiness gating, and canvas fit at
+1024×640 and 1280×800. Native macOS review confirmed light, dark, small, and
+overlapping text; clear selected and hover outlines; disabled controls; error
+visibility; and a quick canvas click updating the row and inspector. The
+1024×640 QA variant encountered an occupied test port, so output readiness was
+checked at the larger size only.
 
 ## Remaining 0.0.2 work
 
