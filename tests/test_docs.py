@@ -1005,6 +1005,7 @@ ISSUE23_TEST_SOURCE_MANIFEST = {
         "output_actions_wait_for_server_readiness",
         "widget_row_rename_focuses_the_existing_inspector_field",
         "canvas_click_selects_frontmost_overlap_and_updates_inspector",
+        "canvas_click_selects_a_separate_caption_and_renders_its_inspector",
         "obscured_widget_remains_selectable_from_its_list_row",
         "empty_canvas_click_repaints_inspector_and_selection_outline",
         "canvas_selection_reveals_its_widget_row",
