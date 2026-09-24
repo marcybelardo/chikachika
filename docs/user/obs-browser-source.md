@@ -71,8 +71,8 @@ for near-black and white overlapping text and visibility of all panels. A
 separate QA variant initialized at 1024×640 confirmed the panels, controls,
 fitted canvas, overlapping light/dark text, and status/error area. Server
 readiness was not verified in that variant because its test port was occupied.
-Manual QA found that direct canvas text clicks did not visibly switch the
-inspector; a fix is under investigation. Session history, focus-aware
+An overlapping canvas hit retained the frontmost selection in manual QA.
+Session history, focus-aware
 shortcuts, and unsaved-close recovery remain #24 work; the separate native
 Settings window remains #25 work; bundled font assets/fidelity remain #26 work;
 and macOS/Linux OBS certification remains #27 work tracked in

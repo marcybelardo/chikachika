@@ -20,8 +20,8 @@ fit-to-space canvas that preserves its aspect ratio, and a resizable inspector.
 The initial window size is 1280×800 logical pixels, with a 1024×640 minimum.
 List, canvas, and inspector use one coordinator-owned selection. Headless
 tests exercise frontmost overlap selection, empty-canvas clearing, and row
-reveal; manual QA found that a canvas text click did not visibly switch the
-inspector to the clicked caption, and that feedback is under investigation.
+reveal and a separate caption click; manual QA confirmed that an overlapping
+canvas hit retains the frontmost selection.
 Each row has a text type indicator and a Rename action. Overlay switching and
 lifecycle controls stay in a compact top strip.
 
@@ -39,9 +39,8 @@ canvas geometry at 1024×640 and 1280×800. Corrected-build visual review at
 checkerboard with all panels visible. A separate QA variant initialized at
 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark
 text, and status/error area. Its test port was already occupied, so server
-readiness was not verified there. Manual QA found that a direct canvas text
-click did not visibly switch the inspector to the clicked caption; a fix is
-under investigation.
+readiness was not verified there. List selection showed the inspector and cyan
+outline; an overlapping canvas hit retained the frontmost selection.
 
 ## Remaining 0.0.2 work
 

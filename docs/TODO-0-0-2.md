@@ -1,8 +1,8 @@
 # `0.0.2` Milestone
 
-**Status:** In progress — issue22 checkpoint delivered; issue23 layout review complete, direct canvas-click follow-up pending; issues #24–#27 remain
+**Status:** In progress — issue22 checkpoint delivered; issue23 layout and contrast review complete; issues #24–#27 remain
 
-`0.0.2` develops the completed vertical slice into a usable overlay composition workspace. The central canvas, left widget list, and right properties inspector are the agreed layout. Milestone scope was confirmed on 2026-09-08, and the dependent design contracts were accepted on 2026-09-17. Issue22’s ordered model, format-2 persistence, coordinator selection/baseline behavior, native multi-widget controls, and complete browser array reconciliation are delivered. Issue23’s three-panel layout and pointer-selection paths are covered by headless GUI tests. Corrected-build visual inspection at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so server readiness was not checked in that variant. Manual QA found direct canvas text clicks did not visibly switch the inspector to the clicked caption; a fix is under investigation. Issues #24–#27 remain.
+`0.0.2` develops the completed vertical slice into a usable overlay composition workspace. The central canvas, left widget list, and right properties inspector are the agreed layout. Milestone scope was confirmed on 2026-09-08, and the dependent design contracts were accepted on 2026-09-17. Issue22’s ordered model, format-2 persistence, coordinator selection/baseline behavior, native multi-widget controls, and complete browser array reconciliation are delivered. Issue23’s three-panel layout and pointer-selection paths are covered by headless GUI tests. Corrected-build visual inspection at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so server readiness was not checked in that variant. An overlapping canvas hit retained frontmost selection in manual QA, as expected from the hitboxes. Issues #24–#27 remain.
 
 This document tracks milestone scope and completion. It does not replace Feature Decision Records (FDRs) for user-visible behavior or Architecture Decision Records (ADRs) for architectural rationale. [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md), [FDR-004](fdr/FDR-004-bundled-offline-text-fonts.md), and [FDR-005](fdr/FDR-005-singleton-native-settings-window.md) govern the accepted 0.0.2 behavior. [ADR-006](adr/ADR-006-ordered-authoritative-widget-model.md), [ADR-007](adr/ADR-007-version-2-overlay-document-persistence.md), [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md), and [ADR-009](adr/ADR-009-secondary-native-settings-viewport-lifecycle.md) govern its architecture. These records resolve design; their Accepted status does not claim runtime implementation.
 
@@ -29,15 +29,15 @@ The focused Python contract is `issue22_documentation_checkpoint` in `tests/test
 
 - **Delivered:** Initial window size 1280×800 logical pixels and minimum 1024×640. Resizable left and right sidebars surround an aspect-preserving canvas that fits the available center space. The left list and right inspector stay within the configured width limits.
 - **Delivered:** Compact overlay switcher and create/rename/confirmed-delete controls above the workspace. The left widget list has a text type indicator, frontmost-first rows, Add text, and a row Rename action. Rename selects that widget and focuses its existing inspector name field.
-- **Headless-tested:** The coordinator maintains one selection across widget rows, canvas hits, and inspector. egui scenarios exercise frontmost overlap selection, obscured-row selection, row reveal, empty-canvas and overlay-switch clearing, and the deletion index fallback. Manual QA found that direct canvas text clicks did not visibly switch the inspector to the clicked caption; a fix is under investigation.
+- **Headless-tested:** The coordinator maintains one selection across widget rows, canvas hits, and inspector. egui scenarios exercise frontmost overlap selection, a separate caption click, obscured-row selection, row reveal, empty-canvas and overlay-switch clearing, and the deletion index fallback. An overlapping canvas click retained frontmost selection in manual QA, as expected from the hitboxes.
 - **Delivered:** File > Create Overlay/Save; Edit > Add Text/Duplicate/Delete/Forward/Backward; View > Fit Canvas; Help > User Documentation. Fit Canvas recomputes the fit; zoom and pan remain out of scope.
 - **Delivered:** Compact status area with save/server state and visible errors, readiness-gated Copy URL/Open output, and Local server settings collapsed by default. Port settings remain in this section until the separate native Settings window in #25 is implemented.
 - **Headless evidence:** egui tests cover supported menu actions, readiness-gated output actions, row rename focus, frontmost overlap selection, obscured-row selection, empty-canvas clearing, row reveal, overlay switching, deletion fallback, editor guides excluded from browser output, and canvas geometry at 1024×640 and 1280×800.
-- **Visual review:** Corrected-build review at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all three panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so readiness was not verified there. Manual QA found that direct canvas text clicks did not visibly switch the inspector; that follow-up remains open.
+- **Visual review:** Corrected-build review at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all three panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so readiness was not verified there. List selection showed the inspector and cyan outline; overlapping canvas clicks retained the frontmost selection.
 
 ### Named issue23 evidence
 
-The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py`. The GUI tests named by this checkpoint are `native_window_and_sidebar_sizes_match_the_workspace_contract`, `workspace_keeps_canvas_inside_the_minimum_window`, `workspace_keeps_canvas_inside_a_larger_desktop_window`, `issue_23_menus_run_their_supported_actions`, `output_actions_wait_for_server_readiness`, `widget_row_rename_focuses_the_existing_inspector_field`, `canvas_click_selects_frontmost_overlap_and_updates_inspector`, `obscured_widget_remains_selectable_from_its_list_row`, `empty_canvas_click_clears_widget_selection`, `canvas_selection_reveals_its_widget_row`, `switching_overlays_by_pointer_clears_widget_selection`, `deleting_selected_widget_by_pointer_selects_the_same_index_fallback`, and `hover_outline_is_distinct_and_editor_guides_do_not_change_browser_output`. The documentation test ties these names to `src/gui.rs`; none of these headless tests substitutes for the manual visual review above.
+The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py`. The GUI tests named by this checkpoint are `native_window_and_sidebar_sizes_match_the_workspace_contract`, `workspace_keeps_canvas_inside_the_minimum_window`, `workspace_keeps_canvas_inside_a_larger_desktop_window`, `issue_23_menus_run_their_supported_actions`, `output_actions_wait_for_server_readiness`, `widget_row_rename_focuses_the_existing_inspector_field`, `canvas_click_selects_frontmost_overlap_and_updates_inspector`, `obscured_widget_remains_selectable_from_its_list_row`, `empty_canvas_click_repaints_inspector_and_selection_outline`, `canvas_selection_reveals_its_widget_row`, `switching_overlays_by_pointer_clears_widget_selection`, `deleting_selected_widget_by_pointer_selects_the_same_index_fallback`, and `hover_outline_is_distinct_and_editor_guides_do_not_change_browser_output`. The documentation test ties these names to `src/gui.rs`; none of these headless tests substitutes for the manual visual review above.
 
 ## Product Requirements
 
@@ -52,13 +52,13 @@ The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py
 - [x] Save state, server state, and recoverable errors remain visible in the compact status area.
 - [x] Copy URL and Open output are readily accessible and enabled only when the selected output is ready.
 
-**Progress note:** Issue23 layout and headless interaction implementation is covered by named egui tests below. Geometry tests do not replace visual review. Corrected-build inspection confirmed contrast and layout at 1280×800; a separate QA variant initialized at 1024×640 confirmed panel and canvas layout, text contrast, and status/error visibility. Direct canvas-click inspector feedback remains under investigation.
+**Progress note:** Issue23 layout and headless interaction implementation is covered by named egui tests below. Geometry tests do not replace visual review. Corrected-build inspection confirmed contrast and layout at 1280×800; a separate QA variant initialized at 1024×640 confirmed panel and canvas layout, text contrast, and status/error visibility. Issue23 layout and contrast review complete.
 
 ### Widget identity and selection
 
 - [x] Each widget row has a text type indicator, editable name, and Rename affordance that focuses the inspector name field; default names follow the accepted text-widget naming rule.
 - [x] Headless egui tests verify that clicking a widget row selects its stable ID and updates the inspector selection.
-- [ ] Confirm in manual UI review that clicking a canvas object visibly switches the inspector to that widget and reveals its row. Headless hit-testing passes, but manual QA found the inspector did not visibly switch.
+- [x] Headless pointer tests confirm canvas clicks select a separate caption, update the inspector, and reveal its row; overlapping hits select the frontmost widget. Manual review confirmed frontmost behavior for overlapping text.
 - [x] Hover and selection use distinct canvas boundaries, and the selected row has a marker that does not rely on color alone.
 - [x] Headless egui tests choose the frontmost widget hit and confirm obscured widgets remain selectable through the list.
 - [x] The top list row represents the frontmost widget, matching native preview and browser output stacking order.
@@ -66,7 +66,7 @@ The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py
 - [x] Selection outlines, hover guides, and other editing controls never appear in browser/OBS output.
 - [x] The initial workflow supports one selected widget at a time.
 
-**Progress note:** Headless egui scenarios cover list/canvas/inspector state synchronization, overlap, row reveal, empty-canvas clearing, overlay switching, deletion fallback, selection markers, and editor-guide isolation from browser output. Manual QA has not confirmed that a direct canvas click visibly switches the inspector; the follow-up remains open.
+**Progress note:** Headless egui scenarios cover list/canvas/inspector state synchronization, separate and overlapping canvas hits, row reveal, empty-canvas clearing, overlay switching, deletion fallback, selection markers, and editor-guide isolation from browser output.
 
 ### Multiple text widgets and editing
 
@@ -135,7 +135,7 @@ The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py
 
 ## Confirmed Scope
 
-The following choices were confirmed on 2026-09-08 and completed as accepted design contracts on 2026-09-17. Runtime implementation status is tracked by the issue22 and issue23 checkpoints above. Layout review has covered both documented sizes; direct canvas-click inspector feedback and the remaining #24–#27 work are still pending.
+The following choices were confirmed on 2026-09-08 and completed as accepted design contracts on 2026-09-17. Runtime implementation status is tracked by the issue22 and issue23 checkpoints above. Layout review has covered both documented sizes; the remaining #24–#27 work is still pending.
 
 | Decision | Scope |
 |---|---|
@@ -152,7 +152,7 @@ Zoom/pan controls, widget hiding/locking, and more advanced selection remain def
 
 - [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) and [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md) define one coordinator-owned workspace timeline of 100 completed actions, text/gesture grouping, overlay lifecycle, selection restoration, content-based dirty state, fresh delivery revisions, and close recovery. The timeline and close-flow portions remain #24 implementation work.
 - [FDR-004](fdr/FDR-004-bundled-offline-text-fonts.md) selects pinned Noto Sans Regular and JetBrains Mono Regular assets with bounded Latin-focused coverage, SIL OFL 1.1 notice obligations, U+FFFD replacement, and explicit issue #26 binary/runtime verification; assets remain undelivered.
-- [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) defines a dark neutral workspace at 1280×800 initial and 1024×640 minimum logical size, including panel, spacing, typography, checkerboard, selection, hover, disabled, and error targets; issue23 code and headless interaction/geometry checks are delivered, layout has been visually reviewed at both sizes, and direct canvas-click inspector feedback remains under investigation.
+- [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) defines a dark neutral workspace at 1280×800 initial and 1024×640 minimum logical size, including panel, spacing, typography, checkerboard, selection, hover, disabled, and error targets; issue23 code and headless interaction/geometry checks are delivered, layout has been visually reviewed at both sizes, and headless tests cover separate and overlapping canvas hits.
 - [ADR-006](adr/ADR-006-ordered-authoritative-widget-model.md) and [ADR-007](adr/ADR-007-version-2-overlay-document-persistence.md) define the delivered ordered model and format-2 persistence contracts. [FDR-005](fdr/FDR-005-singleton-native-settings-window.md) and [ADR-009](adr/ADR-009-secondary-native-settings-viewport-lifecycle.md) define the not-yet-delivered singleton Settings lifecycle.
 
 These design items are complete as decisions; the unchecked requirements below remain the source of truth for implementation completion.
@@ -185,7 +185,7 @@ These design items are complete as decisions; the unchecked requirements below r
 | Accepted contract | Dependent issue | Required implementation evidence |
 |---|---:|---|
 | Ordered model, format-2 persistence, and live complete-snapshot output | #22 | Ordered identity mutations, non-destructive format rejection, round trips, revision initialization, route stability, and connected-output updates |
-| Workspace layout, stable-ID selection, ordering, drag bounds, and appearance | #23 | Headless pointer/list selection including overlap, empty canvas, reveal, and deletion fallback; panel/canvas geometry at 1024×640 and 1280×800; visual layout review at both sizes; direct canvas-click feedback follow-up |
+| Workspace layout, stable-ID selection, ordering, drag bounds, and appearance | #23 | Headless pointer/list selection including overlap, empty canvas, reveal, and deletion fallback; panel/canvas geometry at 1024×640 and 1280×800; visual layout review at both sizes |
 | Workspace history, keyboard focus, dirty baseline, save failure, and editor close | #24 | Named history/save scenarios, 100-action capacity, grouping, redo invalidation, text-focus shortcut suppression, and Save/Discard/Cancel |
 | Singleton native Settings window | #25 | Reuse/focus, discard-on-close, independent save boundaries, next-launch port behavior, and macOS/Linux native lifecycle checks |
 | Exact bundled fonts, coverage, replacement, and licenses | #26 | Pinned-byte lengths and SHA-256, cmap/U+FFFD checks, complete SIL OFL 1.1 notices, decoded data-URL equality, and native/browser rendering |
@@ -195,13 +195,13 @@ The Python documentation tests validate that accepted contracts, assignments, an
 
 ## Implementation Sequence
 
-1. Record the changed feature/model contracts and settle the dependent design details. **Design complete on 2026-09-17; issue22 and issue23 implementation checkpoints are delivered, with direct canvas-click feedback follow-up pending.**
+1. Record the changed feature/model contracts and settle the dependent design details. **Design complete on 2026-09-17; issue22 and issue23 implementation checkpoints are delivered.**
 2. Establish ordered widget state, mutation behavior, saved-format handling, and complete browser array reconciliation (#22). **Checkpoint delivered in the current source branch.**
-3. Build the workspace panels and shared selection behavior (#23). **Layout and headless checks delivered; corrected visual review covered the panel/canvas layout at 1280×800 and a separate 1024×640 QA variant. Direct canvas-click inspector feedback needs a fix and follow-up.**
+3. Build the workspace panels and shared selection behavior (#23). **Layout and headless checks delivered; corrected visual review covered the panel/canvas layout at 1280×800 and a separate 1024×640 QA variant. Headless tests cover separate and overlapping canvas hits and the inspector update.**
 4. Complete widget editing, layer actions, and agreed recovery/keyboard behavior (#24). **Pending history, shortcuts, and close recovery.**
 5. Move Settings into a native window (#25). **Pending.**
 6. Integrate bundled fonts (#26), then complete combined platform/OBS verification and documentation (#27). **Pending; no font files are bundled yet.**
 
 ## Completion Gate
 
-`0.0.2` is complete when every in-scope checkbox is satisfied, the design details above are resolved and recorded, the macOS and Linux OBS workflows pass, relevant tests pass, and documentation matches the implementation. The issue22 and issue23 implementation checkpoints are not the milestone completion gate; issue23's direct canvas-click follow-up, remaining visual checks, the #24–#27 requirements, and platform validation still apply. Deferred requirements must be explicitly removed through the appropriate product decision rather than left implicitly incomplete. Release publication is tracked separately from implementation completion.
+`0.0.2` is complete when every in-scope checkbox is satisfied, the design details above are resolved and recorded, the macOS and Linux OBS workflows pass, relevant tests pass, and documentation matches the implementation. The issue22 and issue23 implementation checkpoints are not the milestone completion gate; remaining visual checks, the #24–#27 requirements, and platform validation still apply. Deferred requirements must be explicitly removed through the appropriate product decision rather than left implicitly incomplete. Release publication is tracked separately from implementation completion.

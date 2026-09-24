@@ -850,7 +850,7 @@ class Milestone002DecisionContractTests(unittest.TestCase):
 
     def test_002_milestone_contract_links(self):
         milestone = (ROOT / "docs/TODO-0-0-2.md").read_text(encoding="utf-8")
-        self.assertIn("**Status:** In progress — issue22 checkpoint delivered; issue23 layout review complete", milestone)
+        self.assertIn("**Status:** In progress — issue22 checkpoint delivered; issue23 layout and contrast review complete", milestone)
         for path in (
             "fdr/FDR-003-multi-widget-composition-workspace.md",
             "fdr/FDR-004-bundled-offline-text-fonts.md",
@@ -1006,7 +1006,7 @@ ISSUE23_TEST_SOURCE_MANIFEST = {
         "widget_row_rename_focuses_the_existing_inspector_field",
         "canvas_click_selects_frontmost_overlap_and_updates_inspector",
         "obscured_widget_remains_selectable_from_its_list_row",
-        "empty_canvas_click_clears_widget_selection",
+        "empty_canvas_click_repaints_inspector_and_selection_outline",
         "canvas_selection_reveals_its_widget_row",
         "switching_overlays_by_pointer_clears_widget_selection",
         "deleting_selected_widget_by_pointer_selects_the_same_index_fallback",
@@ -1044,11 +1044,11 @@ class Issue23DocumentationCheckpointTests(unittest.TestCase):
         ):
             self.assertIn(anchor, normalized, anchor)
 
-        self.assertIn("direct canvas text clicks did not visibly switch the inspector", normalized)
-        self.assertIn("Confirm in manual UI review", milestone)
+        self.assertIn("overlapping canvas click retained frontmost selection", normalized)
+        self.assertIn("Headless pointer tests confirm canvas clicks", milestone)
         self.assertIn("separate QA variant initialized at 1024×640", normalized)
         self.assertIn("server readiness was not checked in that variant", normalized)
-        self.assertIn("issue23 layout review complete, direct canvas-click follow-up pending", milestone)
+        self.assertIn("issue23 layout and contrast review complete", milestone)
         self.assertNotIn("the #23 resizable three-panel layout and overlap behavior remain incomplete", normalized)
 
     def test_issue23_documentation_checkpoint_names_gui_evidence(self):
