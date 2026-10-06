@@ -1697,6 +1697,16 @@ mod tests {
                 .content(),
             "live"
         );
+        assert!(app.cancel_edit(&target).is_ok());
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "start"
+        );
+        assert!(app.pending_edit_target().is_none());
     }
 
     #[test]
@@ -1714,7 +1724,7 @@ mod tests {
     }
 
     #[test]
-    fn save_edit_undo_clean_and_history_is_session_only() {
+    fn save_edit_undo_clean() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("overlays.json");
         let mut app = coordinator(&path);
