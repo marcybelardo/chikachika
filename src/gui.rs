@@ -2294,7 +2294,19 @@ fn request_close(
     coordinator: &mut HeadlessCoordinator,
     transient: &mut TransientState,
 ) -> Result<(), String> {
-    resolve_active_edit(coordinator, transient)?;
+    // Veto the native request before any fallible transaction work.
+    context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    if let Err(error) = resolve_active_edit(coordinator, transient) {
+        if !transient.close_prompt_open {
+            transient.close_prompt_open = true;
+            #[cfg(test)]
+            {
+                transient.close_prompt_count += 1;
+            }
+        }
+        transient.close_error = Some(error.clone());
+        return Err(error);
+    }
     if coordinator.is_dirty() {
         if !transient.close_prompt_open {
             transient.close_prompt_open = true;
@@ -2303,7 +2315,6 @@ fn request_close(
                 transient.close_prompt_count += 1;
             }
         }
-        context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
     } else {
         allow_close(context, transient);
     }
@@ -3172,6 +3183,9 @@ impl ScenarioHarness {
             visible.extend(["Confirm deletion".to_owned(), "Confirm delete".to_owned()]);
         }
         if let Some(error) = self.app.transient.dialog_error.as_deref() {
+            visible.push(error.to_owned());
+        }
+        if let Some(error) = self.app.transient.close_error.as_deref() {
             visible.push(error.to_owned());
         }
         if let Some(error) = self.app.settings.settings_error() {
@@ -5534,28 +5548,330 @@ mod tests {
         );
     }
 
+    fn ping_server(address: std::net::SocketAddr) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let mut stream = TcpStream::connect(address).expect("connect to local server");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set bounded ping timeout");
+        stream
+            .write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("send ping request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("read ping response");
+        response
+    }
+
     #[test]
-    fn close_save_failure_keeps_work_open_and_history() {
+    fn close_save_failure_keeps_work_and_server() {
         let directory = tempfile::tempdir().unwrap();
         let store_path = directory.path().join("is-a-directory");
         std::fs::create_dir(&store_path).unwrap();
-        let coordinator = HeadlessCoordinator::empty(Store::at(&store_path));
+        let mut coordinator = HeadlessCoordinator::empty(Store::at(&store_path));
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        coordinator
+            .add_widget(overlay_id, TextWidget::new("Front"))
+            .unwrap();
+        coordinator
+            .add_widget(overlay_id, TextWidget::new("Middle"))
+            .unwrap();
+        coordinator
+            .add_widget(overlay_id, TextWidget::new("Back"))
+            .unwrap();
+        let server = crate::server::start_on_port_with_hub(0, coordinator.hub()).unwrap();
+        let address = server.local_addr();
+        coordinator.set_server_address(address);
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(coordinator));
-        setup_widgets(&mut harness);
         harness.frame();
-        harness.click("Add").unwrap();
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .add_widget(overlay_id, TextWidget::new("Unsaved"))
+            .unwrap();
         harness.frame();
+        assert!(ping_server(address).contains("200 OK\r\n"));
+        assert!(ping_server(address).ends_with("pong"));
+
+        harness.frame_close_requested();
+        assert!(harness.app().transient.close_prompt_open);
+        harness.pointer_click_control("Close/Cancel").unwrap();
+        assert!(!harness.app().transient.close_prompt_open);
+        assert!(ping_server(address).ends_with("pong"));
+
         harness.frame_close_requested();
         harness.pointer_click_control("Close/Save").unwrap();
         assert!(harness.app().transient.close_prompt_open);
         assert!(harness.app().coordinator().unwrap().is_dirty());
         assert!(harness.app().coordinator().unwrap().can_undo());
-        assert!(harness.app().transient.close_prompt_open);
-        assert!(harness.app().transient.close_error.is_some());
+        let error = harness.app().transient.close_error.clone().unwrap();
+        assert!(harness.has_label(&error));
         assert!(
             !harness
                 .emitted_close_commands()
                 .contains(&egui::ViewportCommand::Close)
+        );
+        assert!(ping_server(address).ends_with("pong"));
+        server.shutdown().unwrap();
+    }
+
+    #[test]
+    fn pending_close_failure_cancels_native_close_and_preserves_live_work() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, widgets) = setup_widgets(&mut harness);
+        let target = edit_target(overlay_id, widgets[0], "content");
+        let mismatched = edit_target(overlay_id, widgets[1], "content");
+        {
+            let coordinator = harness.app_mut().coordinator_mut().unwrap();
+            coordinator.begin_edit(target.clone()).unwrap();
+            coordinator
+                .update_edit(&target, |overlay| {
+                    overlay.set_widget_content(widgets[0], "live work")
+                })
+                .unwrap();
+        }
+        harness.app_mut().transient.active_edit = Some(mismatched);
+        harness.frame_close_requested();
+
+        assert!(harness.app().transient.close_prompt_open);
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+        assert!(
+            !harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+        let error = harness.app().transient.close_error.clone().unwrap();
+        assert!(harness.has_label(&error));
+        let coordinator = harness.app().coordinator().unwrap();
+        assert_eq!(coordinator.pending_edit_target(), Some(&target));
+        assert!(coordinator.is_dirty());
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(widgets[0])
+                .unwrap()
+                .content(),
+            "live work"
+        );
+
+        harness.pointer_click_control("Close/Cancel").unwrap();
+        assert!(!harness.app().transient.close_prompt_open);
+        let coordinator = harness.app().coordinator().unwrap();
+        assert_eq!(coordinator.pending_edit_target(), Some(&target));
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(widgets[0])
+                .unwrap()
+                .content(),
+            "live work"
+        );
+    }
+
+    #[test]
+    fn clean_close_does_not_open_unsaved_prompt() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        harness.frame();
+        harness.frame_close_requested();
+
+        assert!(!harness.app().transient.close_prompt_open);
+        assert_eq!(harness.close_prompt_count(), 0);
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+
+    #[test]
+    fn blocked_startup_close_does_not_open_save_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("overlays.json");
+        std::fs::write(&source_path, b"not json").unwrap();
+        let outcome = HeadlessCoordinator::bootstrap_outcome(Store::at(&source_path));
+        let mut harness = ScenarioHarness::new(outcome);
+        harness.frame();
+        harness.frame_close_requested();
+
+        assert!(!harness.app().transient.close_prompt_open);
+        assert_eq!(harness.close_prompt_count(), 0);
+        assert!(
+            !harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+    }
+
+    #[test]
+    fn close_save_writes_the_new_baseline_before_closing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("overlays.json");
+        let mut coordinator = HeadlessCoordinator::empty(Store::at(&path));
+        let overlay_id = coordinator.create_overlay("Before", 320, 240).unwrap();
+        let widget_id = coordinator
+            .add_widget(overlay_id, TextWidget::new("before"))
+            .unwrap();
+        coordinator.save().unwrap();
+        coordinator
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_content(widget_id, "saved")
+            })
+            .unwrap();
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(coordinator));
+        harness.frame();
+        harness.frame_close_requested();
+        assert!(harness.app().transient.close_prompt_open);
+        harness.pointer_click_control("Close/Save").unwrap();
+
+        let coordinator = harness.app().coordinator().unwrap();
+        assert!(!coordinator.is_dirty());
+        assert_eq!(
+            crate::persistence::load(&path).unwrap(),
+            coordinator.overlays()
+        );
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+
+    #[test]
+    fn close_discard_does_not_write_overlay_or_settings_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let overlay_path = directory.path().join("overlays.json");
+        let settings_path = directory.path().join("settings.json");
+        let settings_store = SettingsStore::at(&settings_path);
+        settings_store.save(Settings::new(4_321).unwrap()).unwrap();
+        let settings_before = std::fs::read(&settings_path).unwrap();
+        let mut coordinator = HeadlessCoordinator::empty(Store::at(&overlay_path));
+        let overlay_id = coordinator.create_overlay("Saved", 320, 240).unwrap();
+        let widget_id = coordinator
+            .add_widget(overlay_id, TextWidget::new("baseline"))
+            .unwrap();
+        coordinator.save().unwrap();
+        let overlay_before = std::fs::read(&overlay_path).unwrap();
+        coordinator
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_content(widget_id, "discarded")
+            })
+            .unwrap();
+        let settings = SettingsState::from_settings(settings_store, Settings::new(4_321).unwrap());
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(coordinator), settings);
+        harness.frame();
+        harness.frame_close_requested();
+        harness.pointer_click_control("Close/Discard").unwrap();
+
+        assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), settings_before);
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+
+    #[test]
+    fn file_quit_while_text_focused_resolves_pending_edit() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.pointer_click_control("Widget content").unwrap();
+        harness.event(egui::Event::Text(" final".to_owned()));
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_some()
+        );
+        harness.pointer_click_control("File menu").unwrap();
+        harness.pointer_click_control("File/Quit").unwrap();
+
+        assert!(harness.app().transient.close_prompt_open);
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .content()
+                .ends_with(" final")
+        );
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+        assert!(
+            !harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+        harness.frame();
+        harness.pointer_click_control("Close/Cancel").unwrap();
+        assert!(!harness.app().transient.close_prompt_open);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_q_while_text_focused_resolves_pending_edit() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.pointer_click_control("Widget content").unwrap();
+        harness.frame_events(vec![
+            egui::Event::Text(" final".to_owned()),
+            egui::Event::Key {
+                key: egui::Key::Q,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+        ]);
+
+        assert!(harness.app().transient.close_prompt_open);
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .content()
+                .ends_with(" final")
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
         );
     }
 
