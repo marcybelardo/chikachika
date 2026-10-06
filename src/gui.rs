@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use eframe::egui;
 
-use crate::app::{ApplicationBootstrap, BootstrapOutcome, HeadlessCoordinator};
+use crate::app::{ApplicationBootstrap, BootstrapOutcome, EditTarget, HeadlessCoordinator};
 use crate::model::{Alignment, Color, FontFamily, OverlayId, Position, TextWidget, TextWidgetId};
 use crate::settings::{MAX_PORT, MIN_PORT, Settings, SettingsState, Store as SettingsStore};
 
@@ -48,6 +48,13 @@ struct TransientState {
     settings_save_error: Option<String>,
     settings_save_succeeded: bool,
     settings_expanded: bool,
+    active_edit: Option<EditTarget>,
+    text_entry_focused: bool,
+    close_prompt_open: bool,
+    allow_close: bool,
+    close_error: Option<String>,
+    #[cfg(test)]
+    close_prompt_count: usize,
     #[cfg(test)]
     widget_selector_rects: HashMap<TextWidgetId, egui::Rect>,
     #[cfg(test)]
@@ -56,6 +63,8 @@ struct TransientState {
     control_rects: HashMap<String, egui::Rect>,
     #[cfg(test)]
     layer_action_enabled: HashMap<&'static str, bool>,
+    #[cfg(test)]
+    menu_action_enabled: HashMap<&'static str, bool>,
     #[cfg(test)]
     preview_rect: Option<egui::Rect>,
     #[cfg(test)]
@@ -71,6 +80,25 @@ struct PreviewDrag {
     overlay_id: OverlayId,
     widget_id: TextWidgetId,
     pointer_offset: egui::Vec2,
+    start_position: Position,
+}
+
+#[derive(Clone, Debug)]
+enum EditEvent {
+    Change(EditTarget, EditValue),
+    Finish(EditTarget, bool),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeferredAction {
+    Save,
+    Undo,
+    Redo,
+    Quit,
+    DeleteWidget,
+    CloseSave,
+    CloseDiscard,
+    CloseCancel,
 }
 
 /// The native application adapter.
@@ -297,7 +325,9 @@ impl ChikachikaApp {
             .as_mut()
             .expect("usable state has a coordinator");
         let transient = &mut self.transient;
+        let mut deferred_actions = Vec::new();
 
+        transient.text_entry_focused = false;
         let target = coordinator
             .selected_overlay_id()
             .zip(coordinator.selected_widget_id());
@@ -324,11 +354,50 @@ impl ChikachikaApp {
                         .control_rects
                         .insert("File/Save".to_owned(), save.rect);
                     if save.clicked() {
-                        let _ = save_workspace(Some(coordinator));
+                        deferred_actions.push(DeferredAction::Save);
+                        ui.close_menu();
+                    }
+                    let quit = ui.button("Quit");
+                    #[cfg(test)]
+                    transient
+                        .control_rects
+                        .insert("File/Quit".to_owned(), quit.rect);
+                    if quit.clicked() {
+                        deferred_actions.push(DeferredAction::Quit);
                         ui.close_menu();
                     }
                 });
                 let _edit = ui.menu_button("Edit", |ui| {
+                    let undo = ui.add_enabled(
+                        coordinator.can_undo(),
+                        egui::Button::new(menu_label("Undo", "Z")),
+                    );
+                    #[cfg(test)]
+                    {
+                        transient
+                            .control_rects
+                            .insert("Edit/Undo".to_owned(), undo.rect);
+                        transient.menu_action_enabled.insert("Undo", undo.enabled());
+                    }
+                    if undo.clicked() {
+                        deferred_actions.push(DeferredAction::Undo);
+                        ui.close_menu();
+                    }
+                    let redo = ui.add_enabled(
+                        coordinator.can_redo(),
+                        egui::Button::new(menu_label("Redo", "Shift+Z")),
+                    );
+                    #[cfg(test)]
+                    {
+                        transient
+                            .control_rects
+                            .insert("Edit/Redo".to_owned(), redo.rect);
+                        transient.menu_action_enabled.insert("Redo", redo.enabled());
+                    }
+                    if redo.clicked() {
+                        deferred_actions.push(DeferredAction::Redo);
+                        ui.close_menu();
+                    }
                     let can_edit_overlay = coordinator.selected_overlay_id().is_some();
                     let can_edit_widget = coordinator.selected_widget_id().is_some();
                     let add = ui.add_enabled(can_edit_overlay, egui::Button::new("Add Text"));
@@ -679,6 +748,119 @@ impl ChikachikaApp {
         render_create_dialog(context, coordinator, transient);
         render_rename_dialog(context, coordinator, transient);
         render_delete_dialog(context, coordinator, transient);
+
+        let (close_requested, save, undo, redo, delete, escape, quit) = context.input(|input| {
+            let modifiers = input.modifiers;
+            let primary = if cfg!(target_os = "macos") {
+                modifiers.command
+            } else {
+                modifiers.ctrl
+            };
+            let z = input.key_pressed(egui::Key::Z) && primary && !transient.text_entry_focused;
+            (
+                input.viewport().close_requested(),
+                input.key_pressed(egui::Key::S) && primary,
+                z && !modifiers.shift,
+                z && modifiers.shift,
+                (input.key_pressed(egui::Key::D) && primary
+                    || input.key_pressed(egui::Key::Delete)
+                    || input.key_pressed(egui::Key::Backspace))
+                    && !transient.text_entry_focused,
+                input.key_pressed(egui::Key::Escape),
+                cfg!(target_os = "macos") && input.key_pressed(egui::Key::Q) && modifiers.command,
+            )
+        });
+        if escape && let Some(target) = transient.active_edit.clone() {
+            if finish_edit(coordinator, &target, true).is_ok() {
+                transient.active_edit = None;
+                transient.preview_drag = None;
+                clear_inspector_state(transient);
+                transient.inspector_target = coordinator
+                    .selected_overlay_id()
+                    .zip(coordinator.selected_widget_id());
+            }
+        }
+        if close_requested {
+            if transient.allow_close {
+                transient.allow_close = false;
+            } else {
+                request_close(context, coordinator, transient);
+            }
+        }
+        render_close_prompt(context, transient, &mut deferred_actions);
+        if save {
+            deferred_actions.push(DeferredAction::Save);
+        }
+        if undo {
+            deferred_actions.push(DeferredAction::Undo);
+        }
+        if redo {
+            deferred_actions.push(DeferredAction::Redo);
+        }
+        if delete {
+            deferred_actions.push(DeferredAction::DeleteWidget);
+        }
+        if quit {
+            deferred_actions.push(DeferredAction::Quit);
+        }
+        if transient.close_prompt_open {
+            deferred_actions.retain(|action| {
+                matches!(
+                    action,
+                    DeferredAction::CloseSave
+                        | DeferredAction::CloseDiscard
+                        | DeferredAction::CloseCancel
+                )
+            });
+        }
+        for action in deferred_actions {
+            match action {
+                DeferredAction::Save => {
+                    resolve_active_edit(coordinator, transient);
+                    let _ = save_workspace(Some(coordinator));
+                }
+                DeferredAction::Undo => {
+                    if coordinator.undo().unwrap_or(false) {
+                        transient.active_edit = None;
+                        clear_inspector_state(transient);
+                        transient.inspector_target = coordinator
+                            .selected_overlay_id()
+                            .zip(coordinator.selected_widget_id());
+                    }
+                }
+                DeferredAction::Redo => {
+                    resolve_active_edit(coordinator, transient);
+                    if coordinator.redo().unwrap_or(false) {
+                        transient.active_edit = None;
+                        clear_inspector_state(transient);
+                        transient.inspector_target = coordinator
+                            .selected_overlay_id()
+                            .zip(coordinator.selected_widget_id());
+                    }
+                }
+                DeferredAction::DeleteWidget => {
+                    resolve_active_edit(coordinator, transient);
+                    let _ = remove_selected_text_widget(Some(coordinator));
+                    clear_inspector_state(transient);
+                    transient.inspector_target = coordinator
+                        .selected_overlay_id()
+                        .zip(coordinator.selected_widget_id());
+                }
+                DeferredAction::Quit => request_close(context, coordinator, transient),
+                DeferredAction::CloseSave => {
+                    resolve_active_edit(coordinator, transient);
+                    match save_workspace(Some(coordinator)) {
+                        Ok(()) => allow_close(context, transient),
+                        Err(error) => transient.close_error = Some(error),
+                    }
+                }
+                DeferredAction::CloseDiscard => allow_close(context, transient),
+                DeferredAction::CloseCancel => {
+                    transient.close_prompt_open = false;
+                    transient.close_error = None;
+                }
+            }
+        }
     }
 }
 
@@ -810,22 +992,66 @@ fn move_selected_text_widget(
     result.map_err(|error| error.to_string())
 }
 
-fn apply_text_editor_values(
+#[derive(Clone, Debug)]
+enum EditValue {
+    Name(String),
+    Content(String),
+    FontSize(f32),
+    Color(Color),
+    Position(Position),
+}
+
+fn edit_target(overlay_id: OverlayId, widget_id: TextWidgetId, field: &str) -> EditTarget {
+    EditTarget {
+        overlay_id,
+        widget_id,
+        field: field.to_owned(),
+    }
+}
+
+fn apply_edit_value(
     coordinator: &mut HeadlessCoordinator,
-    overlay_id: OverlayId,
-    values: TextEditorValues,
+    target: &EditTarget,
+    value: EditValue,
 ) -> Result<(), String> {
     coordinator
-        .update_overlay(overlay_id, move |overlay| {
-            overlay.rename_widget(values.id, values.name)?;
-            overlay.set_widget_content(values.id, values.content)?;
-            overlay.set_widget_font_family(values.id, values.font_family)?;
-            overlay.set_widget_position(values.id, values.position)?;
-            overlay.set_widget_font_size(values.id, values.font_size)?;
-            overlay.set_widget_color(values.id, values.color)?;
-            overlay.set_widget_alignment(values.id, values.alignment)
+        .begin_edit(target.clone())
+        .and_then(|()| {
+            coordinator.update_edit(target, move |overlay| match value {
+                EditValue::Name(value) => overlay.rename_widget(target.widget_id, value),
+                EditValue::Content(value) => overlay.set_widget_content(target.widget_id, value),
+                EditValue::FontSize(value) => overlay.set_widget_font_size(target.widget_id, value),
+                EditValue::Color(value) => overlay.set_widget_color(target.widget_id, value),
+                EditValue::Position(value) => overlay.set_widget_position(target.widget_id, value),
+            })
         })
         .map_err(|error| error.to_string())
+}
+
+fn finish_edit(
+    coordinator: &mut HeadlessCoordinator,
+    target: &EditTarget,
+    cancel: bool,
+) -> Result<(), String> {
+    if cancel {
+        coordinator.cancel_edit(target)
+    } else {
+        coordinator.commit_edit(target)
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn resolve_active_edit(coordinator: &mut HeadlessCoordinator, transient: &mut TransientState) {
+    if let Some(target) = transient.active_edit.take() {
+        if let Err(error) = finish_edit(coordinator, &target, false) {
+            transient.close_error = Some(error);
+            transient.active_edit = Some(target);
+        }
+    } else if let Some(target) = coordinator.pending_edit_target().cloned() {
+        if let Err(error) = coordinator.commit_edit(&target) {
+            transient.close_error = Some(error.to_string());
+        }
+    }
 }
 
 fn render_widget_selector(
@@ -950,7 +1176,8 @@ fn render_selected_widget_inspector(
     let can_move_backward = selected_index.is_some_and(|index| index + 1 < widget_count);
 
     let mut values = TextEditorValues::from_widget(&widget);
-    let original = values.clone();
+    let original_values = values.clone();
+    let mut edit_events = Vec::new();
     ui.heading("Widget inspector");
     ui.label(format!("Stable widget identity: {}", values.id));
     let mut command_changed_selection = false;
@@ -1030,6 +1257,19 @@ fn render_selected_widget_inspector(
     {
         transient.name_field_focused = name_response.has_focus();
     }
+    if name_response.changed() {
+        edit_events.push(EditEvent::Change(
+            edit_target(overlay_id, values.id, "name"),
+            EditValue::Name(values.name.clone()),
+        ));
+    }
+    if name_response.lost_focus() {
+        edit_events.push(EditEvent::Finish(
+            edit_target(overlay_id, values.id, "name"),
+            false,
+        ));
+    }
+    transient.text_entry_focused = name_response.has_focus();
     ui.label("Content");
     let _content_response = ui.add(
         egui::TextEdit::multiline(&mut values.content)
@@ -1041,6 +1281,19 @@ fn render_selected_widget_inspector(
     transient
         .control_rects
         .insert("Widget content".to_owned(), _content_response.rect);
+    transient.text_entry_focused |= _content_response.has_focus();
+    if _content_response.changed() {
+        edit_events.push(EditEvent::Change(
+            edit_target(overlay_id, values.id, "content"),
+            EditValue::Content(values.content.clone()),
+        ));
+    }
+    if _content_response.lost_focus() {
+        edit_events.push(EditEvent::Finish(
+            edit_target(overlay_id, values.id, "content"),
+            false,
+        ));
+    }
     ui.horizontal(|ui| {
         ui.label("Font family");
         egui::ComboBox::from_id_salt(("font-family", overlay_id, values.id))
@@ -1058,15 +1311,32 @@ fn render_selected_widget_inspector(
                 );
             });
         ui.label("Font size");
-        let _font_size_response = ui.add(
-            egui::DragValue::new(&mut values.font_size)
-                .speed(0.5)
-                .suffix(" px"),
-        );
+        let _font_size_response = ui
+            .push_id(("font-size", overlay_id, values.id), |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut values.font_size)
+                        .speed(0.5)
+                        .suffix(" px"),
+                )
+            })
+            .inner;
         #[cfg(test)]
         transient
             .control_rects
             .insert("Font size".to_owned(), _font_size_response.rect);
+        transient.text_entry_focused |= _font_size_response.has_focus();
+        if _font_size_response.changed() {
+            edit_events.push(EditEvent::Change(
+                edit_target(overlay_id, values.id, "font_size"),
+                EditValue::FontSize(values.font_size),
+            ));
+        }
+        if _font_size_response.drag_stopped() || _font_size_response.lost_focus() {
+            edit_events.push(EditEvent::Finish(
+                edit_target(overlay_id, values.id, "font_size"),
+                false,
+            ));
+        }
     });
     ui.horizontal(|ui| {
         ui.label("Color");
@@ -1076,8 +1346,23 @@ fn render_selected_widget_inspector(
             values.color.blue(),
             values.color.alpha(),
         );
-        if ui.color_edit_button_srgba(&mut color).changed() {
+        let color_response = ui.color_edit_button_srgba(&mut color);
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Color".to_owned(), color_response.rect);
+        if color_response.changed() {
             values.color = Color::rgba(color.r(), color.g(), color.b(), color.a());
+            edit_events.push(EditEvent::Change(
+                edit_target(overlay_id, values.id, "color"),
+                EditValue::Color(values.color),
+            ));
+        }
+        if color_response.drag_stopped() || color_response.lost_focus() {
+            edit_events.push(EditEvent::Finish(
+                edit_target(overlay_id, values.id, "color"),
+                false,
+            ));
         }
         ui.label(format!(
             "RGBA({}, {}, {}, {})",
@@ -1110,9 +1395,19 @@ fn render_selected_widget_inspector(
         let mut x = values.position.x();
         let mut y = values.position.y();
         ui.label("X");
-        let _x_response = ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32));
+        let _x_response = ui
+            .push_id(("position-x", overlay_id, values.id), |ui| {
+                ui.add(egui::DragValue::new(&mut x).range(0.0..=canvas.width() as f32))
+            })
+            .inner;
+        transient.text_entry_focused |= _x_response.has_focus();
         ui.label("Y");
-        let _y_response = ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32));
+        let _y_response = ui
+            .push_id(("position-y", overlay_id, values.id), |ui| {
+                ui.add(egui::DragValue::new(&mut y).range(0.0..=canvas.height() as f32))
+            })
+            .inner;
+        transient.text_entry_focused |= _y_response.has_focus();
         #[cfg(test)]
         {
             transient
@@ -1126,10 +1421,67 @@ fn render_selected_widget_inspector(
             x.clamp(0.0, canvas.width() as f32),
             y.clamp(0.0, canvas.height() as f32),
         );
+        if _x_response.changed() {
+            edit_events.push(EditEvent::Change(
+                edit_target(overlay_id, values.id, "position_x"),
+                EditValue::Position(Position::new(x, values.position.y())),
+            ));
+        }
+        if _x_response.drag_stopped() || _x_response.lost_focus() {
+            edit_events.push(EditEvent::Finish(
+                edit_target(overlay_id, values.id, "position_x"),
+                false,
+            ));
+        }
+        if _y_response.changed() {
+            edit_events.push(EditEvent::Change(
+                edit_target(overlay_id, values.id, "position_y"),
+                EditValue::Position(Position::new(values.position.x(), y)),
+            ));
+        }
+        if _y_response.drag_stopped() || _y_response.lost_focus() {
+            edit_events.push(EditEvent::Finish(
+                edit_target(overlay_id, values.id, "position_y"),
+                false,
+            ));
+        }
     });
 
-    if values != original {
-        let _ = apply_text_editor_values(coordinator, overlay_id, values);
+    for event in edit_events {
+        match event {
+            EditEvent::Change(target, value) => {
+                if transient.active_edit.as_ref() != Some(&target) {
+                    resolve_active_edit(coordinator, transient);
+                    transient.active_edit = Some(target.clone());
+                }
+                if let Err(error) = apply_edit_value(coordinator, &target, value) {
+                    transient.close_error = Some(error);
+                }
+            }
+            EditEvent::Finish(target, cancel) => {
+                if transient.active_edit.as_ref() == Some(&target) {
+                    if let Err(error) = finish_edit(coordinator, &target, cancel) {
+                        transient.close_error = Some(error);
+                    } else {
+                        transient.active_edit = None;
+                    }
+                }
+            }
+        }
+    }
+    if values.font_family != original_values.font_family {
+        resolve_active_edit(coordinator, transient);
+        let family = values.font_family;
+        let _ = coordinator.update_overlay(overlay_id, |overlay| {
+            overlay.set_widget_font_family(values.id, family)
+        });
+    }
+    if values.alignment != original_values.alignment {
+        resolve_active_edit(coordinator, transient);
+        let alignment = values.alignment;
+        let _ = coordinator.update_overlay(overlay_id, |overlay| {
+            overlay.set_widget_alignment(values.id, alignment)
+        });
     }
 }
 
@@ -1240,7 +1592,7 @@ fn render_collection_preview(
     let canvas = overlay.canvas();
     let widgets = overlay.widgets().to_vec();
     let selected_widget_id = coordinator.selected_widget_id();
-    let (selection, moved) = render_canvas_preview(
+    let (selection, moved, stopped) = render_canvas_preview(
         ui,
         canvas,
         overlay_id,
@@ -1256,7 +1608,12 @@ fn render_collection_preview(
         Some(PreviewSelection::Widget(widget_id)) => {
             if coordinator.select_widget(widget_id).is_ok() {
                 if !drag_matches(transient.preview_drag, overlay_id, widget_id) {
-                    transient.preview_drag = None;
+                    if let Some(drag) = transient.preview_drag.take() {
+                        let target =
+                            edit_target(drag.overlay_id, drag.widget_id, "canvas_position");
+                        let _ = coordinator.commit_edit(&target);
+                        transient.active_edit = None;
+                    }
                 }
                 transient.inspector_target = Some((overlay_id, widget_id));
                 transient.name_focus_target = None;
@@ -1275,10 +1632,30 @@ fn render_collection_preview(
         // repaint once to bring its contents and the canvas outline up to date.
         ui.ctx().request_repaint();
     }
+    if let Some(drag) = transient
+        .preview_drag
+        .filter(|drag| drag.overlay_id == overlay_id)
+    {
+        let target = edit_target(overlay_id, drag.widget_id, "canvas_position");
+        if coordinator.pending_edit_target() != Some(&target) {
+            let _ = coordinator.begin_edit(target.clone());
+            transient.active_edit = Some(target.clone());
+        }
+    }
     if let Some((widget_id, position)) = moved {
-        let _ = coordinator.update_overlay(overlay_id, |overlay| {
+        let target = edit_target(overlay_id, widget_id, "canvas_position");
+        let _ = coordinator.update_edit(&target, |overlay| {
             overlay.set_widget_position(widget_id, position)
         });
+    }
+    let escape_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    if stopped
+        && !escape_pressed
+        && let Some(drag) = transient.preview_drag.take()
+    {
+        let target = edit_target(overlay_id, drag.widget_id, "canvas_position");
+        let _ = coordinator.commit_edit(&target);
+        transient.active_edit = None;
     }
 }
 
@@ -1291,7 +1668,11 @@ fn render_canvas_preview(
     drag: &mut Option<PreviewDrag>,
     #[cfg(test)] control_rects: &mut HashMap<String, egui::Rect>,
     #[cfg(test)] preview_rect: &mut Option<egui::Rect>,
-) -> (Option<PreviewSelection>, Option<(TextWidgetId, Position)>) {
+) -> (
+    Option<PreviewSelection>,
+    Option<(TextWidgetId, Position)>,
+    bool,
+) {
     let scale = preview_scale(canvas, ui.available_width(), ui.available_height());
     let size = egui::vec2(
         canvas.width() as f32 * scale,
@@ -1329,6 +1710,7 @@ fn render_canvas_preview(
     let mut moved = None;
     let mut selection = None;
     let mut pressed_widget = None;
+    let mut stopped = false;
     let mut hovered_hitboxes = Vec::new();
     let mut selected_hitbox = None;
     let pointer_pressed =
@@ -1416,16 +1798,22 @@ fn render_canvas_preview(
         if drag_matches(*drag, overlay_id, widget.id())
             && (response.drag_stopped() || !pointer_button_down)
         {
-            *drag = None;
+            stopped = true;
         }
     }
     // Paint order is back-to-front, so the last active hit is frontmost.
     if let Some((widget_id, widget_origin, pointer)) = pressed_widget {
         selection = Some(PreviewSelection::Widget(widget_id));
+        let start_position = widgets
+            .iter()
+            .find(|widget| widget.id() == widget_id)
+            .unwrap()
+            .position();
         *drag = Some(PreviewDrag {
             overlay_id,
             widget_id,
             pointer_offset: pointer - widget_origin,
+            start_position,
         });
     }
     if selection.is_none() && canvas_response.clicked() {
@@ -1437,7 +1825,7 @@ fn render_canvas_preview(
     if let Some(hitbox) = selected_hitbox {
         painter.rect_stroke(hitbox, 0.0, egui::Stroke::new(2.0, SELECTION_OUTLINE_COLOR));
     }
-    (selection, moved)
+    (selection, moved, stopped)
 }
 
 fn begin_create(transient: &mut TransientState) {
@@ -1584,6 +1972,88 @@ fn save_port_for_next_launch(
     }
 }
 
+fn menu_label(action: &str, shortcut: &str) -> String {
+    let key = if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
+    };
+    format!("{action}\t{key}{shortcut}")
+}
+
+fn request_close(
+    context: &egui::Context,
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+) {
+    resolve_active_edit(coordinator, transient);
+    if coordinator.is_dirty() {
+        if !transient.close_prompt_open {
+            transient.close_prompt_open = true;
+            #[cfg(test)]
+            {
+                transient.close_prompt_count += 1;
+            }
+        }
+        context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    } else {
+        allow_close(context, transient);
+    }
+}
+
+fn allow_close(context: &egui::Context, transient: &mut TransientState) {
+    transient.close_prompt_open = false;
+    transient.allow_close = true;
+    context.send_viewport_cmd(egui::ViewportCommand::Close);
+}
+
+fn render_close_prompt(
+    context: &egui::Context,
+    transient: &mut TransientState,
+    actions: &mut Vec<DeferredAction>,
+) {
+    if !transient.close_prompt_open {
+        return;
+    }
+    egui::Window::new("Unsaved changes")
+        .id(egui::Id::new("close-confirmation"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(context, |ui| {
+            ui.label("Save your changes before closing?");
+            ui.horizontal(|ui| {
+                let save = ui.button("Save and close");
+                #[cfg(test)]
+                transient
+                    .control_rects
+                    .insert("Close/Save".to_owned(), save.rect);
+                if save.clicked() {
+                    actions.push(DeferredAction::CloseSave);
+                }
+                let discard = ui.button("Discard");
+                #[cfg(test)]
+                transient
+                    .control_rects
+                    .insert("Close/Discard".to_owned(), discard.rect);
+                if discard.clicked() {
+                    actions.push(DeferredAction::CloseDiscard);
+                }
+                let cancel = ui.button("Cancel");
+                #[cfg(test)]
+                transient
+                    .control_rects
+                    .insert("Close/Cancel".to_owned(), cancel.rect);
+                if cancel.clicked() {
+                    actions.push(DeferredAction::CloseCancel);
+                }
+            });
+            if let Some(error) = transient.close_error.as_deref() {
+                ui.colored_label(egui::Color32::from_rgb(239, 83, 80), error);
+            }
+        });
+}
+
 fn save_workspace(coordinator: Option<&mut HeadlessCoordinator>) -> Result<(), String> {
     coordinator
         .ok_or_else(|| "workspace is not available".to_owned())?
@@ -1667,6 +2137,7 @@ fn render_settings(
     ui.horizontal(|ui| {
         ui.label("Port for next launch (1–65535)");
         let input = ui.text_edit_singleline(&mut transient.settings_port_input);
+        transient.text_entry_focused |= input.has_focus();
         if input.changed() {
             transient.settings_save_error = None;
             transient.settings_save_succeeded = false;
@@ -1799,11 +2270,14 @@ fn render_create_dialog(
         .open(&mut open)
         .show(context, |ui| {
             ui.label("Name");
-            ui.text_edit_singleline(&mut transient.create_name);
+            let name = ui.text_edit_singleline(&mut transient.create_name);
+            transient.text_entry_focused |= name.has_focus();
             ui.label("Fixed canvas width");
-            ui.text_edit_singleline(&mut transient.create_width);
+            let width = ui.text_edit_singleline(&mut transient.create_width);
+            transient.text_entry_focused |= width.has_focus();
             ui.label("Fixed canvas height");
-            ui.text_edit_singleline(&mut transient.create_height);
+            let height = ui.text_edit_singleline(&mut transient.create_height);
+            transient.text_entry_focused |= height.has_focus();
             if let Some(error) = transient.dialog_error.as_deref() {
                 ui.colored_label(egui::Color32::from_rgb(183, 28, 28), error);
             }
@@ -1843,7 +2317,8 @@ fn render_rename_dialog(
         .open(&mut open)
         .show(context, |ui| {
             ui.label(format!("Rename overlay {id}"));
-            ui.text_edit_singleline(&mut transient.rename_name);
+            let name = ui.text_edit_singleline(&mut transient.rename_name);
+            transient.text_entry_focused |= name.has_focus();
             if let Some(error) = transient.dialog_error.as_deref() {
                 ui.colored_label(egui::Color32::from_rgb(183, 28, 28), error);
             }
@@ -1922,6 +2397,7 @@ pub struct ScenarioHarness {
     last_copied_text: String,
     last_open_url: Option<egui::OpenUrl>,
     last_shapes: Vec<egui::epaint::ClippedShape>,
+    last_viewport_commands: Vec<egui::ViewportCommand>,
     screen_size: egui::Vec2,
 }
 
@@ -1965,19 +2441,45 @@ impl ScenarioHarness {
             last_copied_text: String::new(),
             last_open_url: None,
             last_shapes: Vec::new(),
+            last_viewport_commands: Vec::new(),
             screen_size,
         }
     }
 
     fn raw_input(&self, events: Vec<egui::Event>) -> egui::RawInput {
-        egui::RawInput {
+        let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 self.screen_size,
             )),
             events,
             ..Default::default()
-        }
+        };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        input
+    }
+
+    fn frame_close_requested(&mut self) {
+        let mut input = self.raw_input(Vec::new());
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events = vec![egui::ViewportEvent::Close];
+        let app = &mut self.app;
+        let output = self.context.run(input, |context| app.render(context));
+        self.last_viewport_commands = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .clone();
+        self.last_shapes = output.shapes;
+    }
+
+    fn emitted_close_commands(&self) -> &[egui::ViewportCommand] {
+        &self.last_viewport_commands
+    }
+
+    fn close_prompt_count(&self) -> usize {
+        self.app.transient.close_prompt_count
     }
 
     /// Advances one egui frame with no input events.
@@ -1993,6 +2495,7 @@ impl ScenarioHarness {
             self.app.transient.overlay_selector_rects.clear();
             self.app.transient.control_rects.clear();
             self.app.transient.layer_action_enabled.clear();
+            self.app.transient.menu_action_enabled.clear();
             self.app.transient.preview_rect = None;
         }
         let app = &mut self.app;
@@ -2000,6 +2503,9 @@ impl ScenarioHarness {
         self.last_copied_text = output.platform_output.copied_text;
         self.last_open_url = output.platform_output.open_url;
         self.last_shapes = output.shapes;
+        self.last_viewport_commands = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .clone();
     }
 
     /// Sends one real egui event and renders the resulting frame.
@@ -2151,6 +2657,10 @@ impl ScenarioHarness {
 
     fn layer_action_is_enabled(&self, label: &'static str) -> Option<bool> {
         self.app.transient.layer_action_enabled.get(label).copied()
+    }
+
+    fn menu_action_is_enabled(&self, label: &'static str) -> Option<bool> {
+        self.app.transient.menu_action_enabled.get(label).copied()
     }
 
     /// Activates a semantic adapter action by exact label and renders the next
@@ -2362,8 +2872,16 @@ impl ScenarioHarness {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn configure_macos_event_loop(
+    builder: &mut winit::event_loop::EventLoopBuilder<eframe::UserEvent>,
+) {
+    use winit::platform::macos::EventLoopBuilderExtMacOS;
+    builder.with_default_menu(false);
+}
+
 /// Run the Chikachika native window until it is closed.
-///
+
 /// The caller should pass `ApplicationBootstrap::new(outcome, settings)` (or
 /// `outcome.with_settings(settings)`) so the GUI can display and update the
 /// application settings state alongside the overlay workspace.
@@ -2372,6 +2890,8 @@ pub fn run(bootstrap: ApplicationBootstrap) -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(WINDOW_INITIAL_SIZE)
             .with_min_inner_size(WINDOW_MINIMUM_SIZE),
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(configure_macos_event_loop)),
         ..Default::default()
     };
 
@@ -3879,6 +4399,14 @@ mod tests {
             harness.app().transient.preview_drag.unwrap().pointer_offset,
             grab - pressed_origin
         );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_some()
+        );
         assert_eq!(
             harness
                 .app()
@@ -3938,6 +4466,82 @@ mod tests {
     }
 
     #[test]
+    fn drag_commit_cancel_and_live_updates() {
+        let mut harness = ScenarioHarness::new_with_size(
+            BootstrapOutcome::Ready(ready_app()),
+            egui::vec2(960.0, 1200.0),
+        );
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness
+            .app_mut()
+            .coordinator_mut()
+            .unwrap()
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_position(ids[0], Position::new(40.0, 30.0))
+            })
+            .unwrap();
+        harness.frame();
+        let start = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .position();
+        let hit = harness.control_rect("Canvas preview").unwrap();
+        let from = hit.min + egui::vec2(3.0, 4.0);
+        let to = from + egui::vec2(50.0, 35.0);
+        harness.pointer_move(from);
+        harness.pointer_button(from, true);
+        harness.pointer_move(to);
+        let live = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .position();
+        assert_ne!(live, start);
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .unwrap()
+                .field,
+            "canvas_position"
+        );
+        harness.key(egui::Key::Escape, true);
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .position(),
+            start
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
+        );
+        harness.pointer_button(to, false);
+    }
+
+    #[test]
     fn widget_mutations_use_ids_and_keep_inspector_target_stable() {
         let mut coordinator = ready_app();
         let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
@@ -3948,21 +4552,24 @@ mod tests {
             .add_widget(overlay_id, TextWidget::new("Second"))
             .unwrap();
         assert_eq!(coordinator.selected_widget_id(), Some(second));
-        apply_text_editor_values(
+        let name = edit_target(overlay_id, second, "name");
+        apply_edit_value(
             &mut coordinator,
-            overlay_id,
-            TextEditorValues {
-                id: second,
-                name: "Renamed".to_owned(),
-                content: "Changed".to_owned(),
-                font_family: FontFamily::JetBrainsMono,
-                position: Position::new(123.0, 45.0),
-                font_size: 42.0,
-                color: Color::rgba(10, 20, 30, 128),
-                alignment: Alignment::Center,
-            },
+            &name,
+            EditValue::Name("Renamed".to_owned()),
         )
         .unwrap();
+        coordinator.commit_edit(&name).unwrap();
+        coordinator
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_content(second, "Changed")?;
+                overlay.set_widget_font_family(second, FontFamily::JetBrainsMono)?;
+                overlay.set_widget_position(second, Position::new(123.0, 45.0))?;
+                overlay.set_widget_font_size(second, 42.0)?;
+                overlay.set_widget_color(second, Color::rgba(10, 20, 30, 128))?;
+                overlay.set_widget_alignment(second, Alignment::Center)
+            })
+            .unwrap();
         assert_eq!(
             coordinator
                 .overlay(overlay_id)
@@ -4005,6 +4612,235 @@ mod tests {
             harness.app().coordinator().unwrap().selected_widget_id(),
             None
         );
+    }
+
+    #[test]
+    fn grouped_inspector_text_edits() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness
+            .replace_text_control("Widget name", "Newest")
+            .unwrap();
+        let coordinator = harness.app().coordinator().unwrap();
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .name(),
+            "Newest"
+        );
+        assert!(coordinator.pending_edit_target().is_some());
+        harness.key(egui::Key::Enter, true);
+        harness.frame();
+        assert!(harness.app().coordinator().unwrap().can_undo());
+        harness.pointer_click_control("Widget content").unwrap();
+        harness.event(egui::Event::Text("line one".to_owned()));
+        harness.event(egui::Event::Text("\nline two".to_owned()));
+        harness.frame();
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_some()
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .content()
+                .contains("line two")
+        );
+    }
+
+    #[test]
+    fn grouped_numeric_and_color_gestures() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.replace_number_control("Font size", "42").unwrap();
+        harness.frame();
+        let widget = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap();
+        assert_eq!(widget.font_size(), 42.0);
+        assert!(harness.app().coordinator().unwrap().can_undo());
+        let before = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .color();
+        harness.pointer_click_control("Color").unwrap();
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .color(),
+            before
+        );
+        assert!(harness.app().coordinator().unwrap().can_undo());
+    }
+
+    #[test]
+    fn close_prompt_save_discard_cancel_matrix() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (_overlay_id, _ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.click("Add").unwrap();
+        harness.frame();
+        harness.frame_close_requested();
+        assert!(harness.app().transient.close_prompt_open);
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+        assert_eq!(harness.close_prompt_count(), 1);
+        harness.frame_close_requested();
+        assert_eq!(harness.close_prompt_count(), 1);
+        harness.pointer_click_control("Close/Cancel").unwrap();
+        harness.frame();
+        assert!(!harness.app().transient.close_prompt_open);
+        harness.frame_close_requested();
+        harness.pointer_click_control("Close/Discard").unwrap();
+        assert!(
+            harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+
+    #[test]
+    fn focus_safe_shortcut_matrix_and_text_native_undo_and_newline() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness
+            .replace_text_control("Widget content", "first\nsecond")
+            .unwrap();
+        let original = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .content()
+            .to_owned();
+        assert!(original.contains("second"));
+        let primary = if cfg!(target_os = "macos") {
+            egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL
+        };
+        harness.key_with_modifiers(egui::Key::Z, true, primary);
+        harness.frame();
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[0])
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_some()
+        );
+        harness.key_with_modifiers(egui::Key::D, true, primary);
+        harness.frame();
+        assert_eq!(
+            harness.app().coordinator().unwrap().selected_widget_id(),
+            Some(ids[0])
+        );
+    }
+
+    #[test]
+    fn issue24_menu_actions_and_enabled_states() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.pointer_click_control("Edit menu").unwrap();
+        harness.frame();
+        assert_eq!(harness.menu_action_is_enabled("Undo"), Some(true));
+        assert_eq!(harness.menu_action_is_enabled("Redo"), Some(false));
+        harness
+            .replace_text_control("Widget name", "Menu edit")
+            .unwrap();
+        harness.key(egui::Key::Enter, true);
+        harness.frame();
+        harness.pointer_click_control("Edit menu").unwrap();
+        harness.frame();
+        assert_eq!(harness.menu_action_is_enabled("Undo"), Some(true));
+        harness.pointer_click_control("Edit/Undo").unwrap();
+        harness.frame();
+        assert_ne!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .name(),
+            "Menu edit"
+        );
+    }
+
+    #[test]
+    fn close_save_failure_keeps_work_open_and_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let store_path = directory.path().join("is-a-directory");
+        std::fs::create_dir(&store_path).unwrap();
+        let coordinator = HeadlessCoordinator::empty(Store::at(&store_path));
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(coordinator));
+        setup_widgets(&mut harness);
+        harness.frame();
+        harness.click("Add").unwrap();
+        harness.frame();
+        harness.frame_close_requested();
+        harness.pointer_click_control("Close/Save").unwrap();
+        assert!(harness.app().transient.close_prompt_open);
+        assert!(harness.app().coordinator().unwrap().is_dirty());
+        assert!(harness.app().coordinator().unwrap().can_undo());
+        assert!(
+            !harness
+                .emitted_close_commands()
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_event_loop_disables_default_menu() {
+        let mut builder = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event();
+        configure_macos_event_loop(&mut builder);
     }
 
     #[test]
