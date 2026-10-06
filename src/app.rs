@@ -533,8 +533,25 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         Ok(())
     }
     pub fn undo(&mut self) -> Result<bool, CoordinatorError> {
-        self.resolve_pending()?;
+        if let Some(pending) = self.pending.as_ref() {
+            let before = pending.before.clone();
+            if before.overlays != self.overlays {
+                let after = self.workspace_snapshot();
+                self.redo
+                    .try_reserve(1)
+                    .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
+                if let Err(error) = self.restore_snapshot(&before) {
+                    return Err(self.reject(error));
+                }
+                self.pending = None;
+                self.redo.clear();
+                self.redo.push(HistoryEntry { before, after });
+                self.operation_error = None;
+                return Ok(true);
+            }
+        }
         let Some(entry) = self.undo.last().cloned() else {
+            self.pending = None;
             return Ok(false);
         };
         self.redo
@@ -543,6 +560,7 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         if let Err(error) = self.restore_snapshot(&entry.before) {
             return Err(self.reject(error));
         }
+        self.pending = None;
         self.undo.pop();
         self.redo.push(entry);
         self.operation_error = None;
@@ -1602,7 +1620,8 @@ mod tests {
     #[test]
     fn history_restore_failure_preserves_workspace() {
         let d = tempfile::tempdir().unwrap();
-        let initial = Overlay::with_dimensions("Initial", 100, 100).unwrap();
+        let mut initial = Overlay::with_dimensions("Initial", 100, 100).unwrap();
+        initial.add_widget("start").unwrap();
         let id = initial.id();
         let hub = ScriptedHub::new(false);
         let mut app = HeadlessCoordinator::from_overlays_with_hub(
@@ -1613,14 +1632,36 @@ mod tests {
         .unwrap();
         app.rename_overlay(id, "Changed").unwrap();
         let before = app.overlays().to_vec();
+        let pending_target = EditTarget {
+            overlay_id: id,
+            widget_id: app.overlay(id).unwrap().widgets()[0].id(),
+            field: "content".into(),
+        };
+        app.begin_edit(pending_target.clone()).unwrap();
+        let widget_id = pending_target.widget_id;
+        app.update_edit(&pending_target, |overlay| {
+            overlay.set_widget_content(widget_id, "pending")
+        })
+        .unwrap();
         hub.set_restore_error(HubError::CollectionDivergence);
         assert!(app.undo().is_err());
-        assert_eq!(app.overlays(), before);
+        assert_eq!(app.pending_edit_target(), Some(&pending_target));
+        assert_eq!(app.overlays().len(), before.len());
         assert_eq!(hub.current(id).unwrap().name(), "Changed");
         assert!(app.can_undo());
         assert!(!app.can_redo());
         assert!(app.undo().unwrap());
         assert_eq!(app.last_error(), None);
+        assert_eq!(app.overlay(id).unwrap().name(), "Changed");
+        assert_eq!(
+            app.overlay(id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "start"
+        );
+        assert!(app.can_redo());
     }
 
     #[test]
