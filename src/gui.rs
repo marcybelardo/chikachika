@@ -1920,6 +1920,7 @@ fn select_preview_widget(
     coordinator: &mut HeadlessCoordinator,
     transient: &mut TransientState,
     widget_id: TextWidgetId,
+    previous_drag: Option<PreviewDrag>,
 ) -> bool {
     match coordinator.select_widget(widget_id) {
         Ok(()) => {
@@ -1927,7 +1928,7 @@ fn select_preview_widget(
             true
         }
         Err(error) => {
-            transient.preview_drag = None;
+            transient.preview_drag = previous_drag;
             transient.preview_error = Some(error.to_string());
             false
         }
@@ -1974,6 +1975,7 @@ fn render_collection_preview(
     let canvas = overlay.canvas();
     let widgets = overlay.widgets().to_vec();
     let selected_widget_id = coordinator.selected_widget_id();
+    let previous_drag = transient.preview_drag;
     let (selection, moved, stopped) = render_canvas_preview(
         ui,
         canvas,
@@ -1988,7 +1990,7 @@ fn render_collection_preview(
     );
     match selection {
         Some(PreviewSelection::Widget(widget_id)) => {
-            if select_preview_widget(coordinator, transient, widget_id) {
+            if select_preview_widget(coordinator, transient, widget_id, previous_drag) {
                 if !drag_matches(transient.preview_drag, overlay_id, widget_id) {
                     if let Some(drag) = transient.preview_drag {
                         if let Err(error) = commit_preview_drag(coordinator, transient, drag) {
@@ -3419,10 +3421,34 @@ mod tests {
         assert!(!select_preview_widget(
             &mut coordinator,
             &mut transient,
-            foreign_widget
+            foreign_widget,
+            None,
         ));
         assert!(transient.preview_drag.is_none());
         assert!(transient.preview_error.is_some());
+
+        let pending_target = edit_target(overlay_id, widget_ids[0], "canvas_position");
+        coordinator.begin_edit(pending_target.clone()).unwrap();
+        let pending_drag = PreviewDrag {
+            overlay_id,
+            widget_id: widget_ids[0],
+            pointer_offset: egui::Vec2::ZERO,
+            start_position: Position::new(0.0, 0.0),
+        };
+        transient.active_edit = Some(pending_target.clone());
+        transient.preview_drag = Some(invalid_drag);
+        assert!(!select_preview_widget(
+            &mut coordinator,
+            &mut transient,
+            foreign_widget,
+            Some(pending_drag),
+        ));
+        assert_eq!(transient.preview_drag, Some(pending_drag));
+        assert_eq!(transient.active_edit, Some(pending_target.clone()));
+        assert_eq!(coordinator.pending_edit_target(), Some(&pending_target));
+        assert_eq!(coordinator.selected_widget_id(), Some(widget_ids[0]));
+        coordinator.cancel_edit(&pending_target).unwrap();
+        transient.active_edit = None;
 
         transient.preview_drag = Some(invalid_drag);
         assert!(begin_preview_drag(&mut coordinator, &mut transient, invalid_drag).is_err());
