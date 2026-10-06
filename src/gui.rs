@@ -2699,9 +2699,17 @@ fn render_create_dialog(
             }
             ui.label("Fixed canvas width");
             let width = ui.text_edit_singleline(&mut transient.create_width);
+            #[cfg(test)]
+            transient
+                .control_rects
+                .insert("Create width".to_owned(), width.rect);
             transient.text_editor_ids.push(width.id);
             ui.label("Fixed canvas height");
             let height = ui.text_edit_singleline(&mut transient.create_height);
+            #[cfg(test)]
+            transient
+                .control_rects
+                .insert("Create height".to_owned(), height.rect);
             transient.text_editor_ids.push(height.id);
             if let Some(error) = transient.dialog_error.as_deref() {
                 ui.colored_label(egui::Color32::from_rgb(183, 28, 28), error);
@@ -5523,6 +5531,238 @@ mod tests {
                 .emitted_close_commands()
                 .contains(&egui::ViewportCommand::Close)
         );
+    }
+
+    #[test]
+    fn focused_fields_suppress_document_shortcuts_and_global_save_remains_available() {
+        #[derive(Clone, Copy)]
+        enum Field {
+            FontSize,
+            PositionX,
+            ColorRed,
+            CreateName,
+            CreateWidth,
+            CreateHeight,
+            RenameName,
+            SettingsPort,
+        }
+
+        let primary = if cfg!(target_os = "macos") {
+            egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL
+        };
+        let cases = [
+            (Field::FontSize, "Font size"),
+            (Field::PositionX, "Position X"),
+            (Field::ColorRed, "Color R"),
+            (Field::CreateName, "Create name"),
+            (Field::CreateWidth, "Create width"),
+            (Field::CreateHeight, "Create height"),
+            (Field::RenameName, "Rename name"),
+            (Field::SettingsPort, "Settings port"),
+        ];
+
+        for (field, label) in cases {
+            let directory = tempfile::tempdir().expect("temporary workspace directory");
+            let overlay_path = directory.path().join("overlays.json");
+            let settings_path = directory.path().join("settings.json");
+            let mut coordinator = HeadlessCoordinator::empty(Store::at(&overlay_path));
+            let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+            let widget_ids = [
+                coordinator
+                    .add_widget(overlay_id, TextWidget::new("Front"))
+                    .unwrap(),
+                coordinator
+                    .add_widget(overlay_id, TextWidget::new("Back"))
+                    .unwrap(),
+            ];
+            coordinator.select_widget(widget_ids[0]).unwrap();
+            coordinator.save().unwrap();
+            coordinator
+                .update_overlay(overlay_id, |overlay| {
+                    overlay.set_widget_content(widget_ids[0], "Unsaved")
+                })
+                .unwrap();
+            coordinator
+                .update_overlay(overlay_id, |overlay| {
+                    overlay.set_widget_content(widget_ids[0], "Current")
+                })
+                .unwrap();
+            assert!(coordinator.undo().unwrap());
+            assert!(coordinator.can_undo());
+            assert!(coordinator.can_redo());
+            assert!(coordinator.is_dirty());
+            let baseline = coordinator.overlays().to_vec();
+            let settings = SettingsState::from_settings(
+                SettingsStore::at(&settings_path),
+                Settings::new(4_000).unwrap(),
+            );
+            let mut harness =
+                ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(coordinator), settings);
+            harness.frame();
+
+            match field {
+                Field::FontSize | Field::PositionX => {}
+                Field::ColorRed => {
+                    harness.pointer_click_control("Color").unwrap();
+                    harness.frame();
+                }
+                Field::CreateName | Field::CreateWidth | Field::CreateHeight => {
+                    harness.pointer_click_control("Create overlay").unwrap();
+                    harness.frame();
+                }
+                Field::RenameName => {
+                    harness.pointer_click_control("Rename").unwrap();
+                    harness.frame();
+                }
+                Field::SettingsPort => {
+                    harness
+                        .pointer_click_control("Local server settings")
+                        .unwrap();
+                    harness.frame();
+                }
+            }
+            harness
+                .pointer_click_control(label)
+                .unwrap_or_else(|error| panic!("focus {label}: {error}"));
+            let focused = harness
+                .context
+                .memory(|memory| memory.focused())
+                .unwrap_or_else(|| panic!("{label} must receive pointer focus"));
+            assert!(
+                egui::widgets::text_edit::TextEditState::load(&harness.context, focused).is_some(),
+                "{label} focus must belong to a real egui text editor"
+            );
+
+            let assert_document_unchanged = |harness: &ScenarioHarness, dirty: bool| {
+                let coordinator = harness.app().coordinator().unwrap();
+                assert_eq!(
+                    coordinator.overlays(),
+                    baseline,
+                    "{label} changed document data"
+                );
+                assert_eq!(coordinator.selected_overlay_id(), Some(overlay_id));
+                assert_eq!(coordinator.selected_widget_id(), Some(widget_ids[0]));
+                assert!(coordinator.can_undo(), "{label} lost undo history");
+                assert!(coordinator.can_redo(), "{label} lost redo history");
+                assert_eq!(
+                    coordinator.is_dirty(),
+                    dirty,
+                    "{label} changed saved status"
+                );
+            };
+
+            // Keep destructive text-edit keys at their no-op caret boundaries;
+            // the assertions below are about document shortcuts, not text entry.
+            harness.key(egui::Key::Home, true);
+            harness.key(egui::Key::Backspace, true);
+            assert_document_unchanged(&harness, true);
+            harness.key(egui::Key::End, true);
+            harness.key(egui::Key::Delete, true);
+            assert_document_unchanged(&harness, true);
+
+            harness.key_with_modifiers(egui::Key::Z, true, primary);
+            assert_document_unchanged(&harness, true);
+            harness.key_with_modifiers(egui::Key::Z, true, primary | egui::Modifiers::SHIFT);
+            assert_document_unchanged(&harness, true);
+            harness.key_with_modifiers(egui::Key::D, true, primary);
+            assert_document_unchanged(&harness, true);
+
+            harness.key_with_modifiers(egui::Key::S, true, primary);
+            assert_document_unchanged(&harness, false);
+            assert_eq!(
+                Store::at(&overlay_path).load().unwrap(),
+                baseline,
+                "global Save while {label} is focused must write the workspace"
+            );
+        }
+    }
+
+    #[test]
+    fn global_save_commits_and_persists_pending_inspector_edit_while_text_focused() {
+        let directory = tempfile::tempdir().expect("temporary workspace directory");
+        let overlay_path = directory.path().join("overlays.json");
+        let mut coordinator = HeadlessCoordinator::empty(Store::at(&overlay_path));
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        let widget_id = coordinator
+            .add_widget(overlay_id, TextWidget::new("Front"))
+            .unwrap();
+        coordinator.save().unwrap();
+        let settings = SettingsState::from_settings(
+            SettingsStore::at(directory.path().join("settings.json")),
+            Settings::new(4_000).unwrap(),
+        );
+        let mut harness =
+            ScenarioHarness::new_with_settings(BootstrapOutcome::Ready(coordinator), settings);
+        harness.frame();
+        harness
+            .replace_text_control("Widget content", "Saved while focused")
+            .unwrap();
+
+        let coordinator = harness.app().coordinator().unwrap();
+        assert!(coordinator.pending_edit_target().is_some());
+        assert!(coordinator.is_dirty());
+        harness.key_with_modifiers(
+            egui::Key::S,
+            true,
+            if cfg!(target_os = "macos") {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::CTRL
+            },
+        );
+
+        let coordinator = harness.app().coordinator().unwrap();
+        assert!(coordinator.pending_edit_target().is_none());
+        assert!(!coordinator.is_dirty());
+        assert_eq!(
+            coordinator
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "Saved while focused"
+        );
+        assert_eq!(
+            Store::at(&overlay_path).load().unwrap()[0]
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "Saved while focused"
+        );
+    }
+
+    #[test]
+    fn color_popup_open_and_close_preserve_document_history() {
+        let directory = tempfile::tempdir().expect("temporary workspace directory");
+        let mut coordinator =
+            HeadlessCoordinator::empty(Store::at(directory.path().join("overlays.json")));
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        let widget_id = coordinator
+            .add_widget(overlay_id, TextWidget::new("Front"))
+            .unwrap();
+        coordinator.rename_overlay(overlay_id, "Temporary").unwrap();
+        assert!(coordinator.undo().unwrap());
+        let baseline = coordinator.overlays().to_vec();
+        assert!(coordinator.can_undo());
+        assert!(coordinator.can_redo());
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(coordinator));
+        harness.frame();
+
+        harness.pointer_click_control("Color").unwrap();
+        harness.frame();
+        assert!(harness.control_rect("Color R slider").is_some());
+        harness.pointer_click_control("Color").unwrap();
+        harness.frame();
+
+        let coordinator = harness.app().coordinator().unwrap();
+        assert!(harness.control_rect("Color R slider").is_none());
+        assert_eq!(coordinator.overlays(), baseline);
+        assert_eq!(coordinator.selected_widget_id(), Some(widget_id));
+        assert!(coordinator.can_undo());
+        assert!(coordinator.can_redo());
     }
 
     #[test]
