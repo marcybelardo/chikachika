@@ -40,5 +40,9 @@ workflow without including `0.0.2` implementation work.
 
 The workflow deliberately refuses lightweight or malformed tags, a tag that
 does not match `Cargo.toml`, and a tag that already has a GitHub Release. It
-does not build installers or binary bundles; the current release remains a
-source-based development build.
+does not build installers or binary bundles. The v0.0.1 GitHub Release is
+published as a prerelease at
+[github.com/marcybelardo/chikachika/releases/tag/v0.0.1](https://github.com/marcybelardo/chikachika/releases/tag/v0.0.1),
+with `publishedAt` 2026-09-08T16:02:10Z and no uploaded assets. It is a tagged
+source release only, not a binary package or publication of current 0.0.2 work.
+Keep it a prerelease; do not move, replace, or reuse its published tag.

@@ -20,15 +20,15 @@ Use **Add text** in the left **Widgets** list. The frontmost widget appears at
 the top. Rows have a **TXT** type indicator, an editable name, and a **Rename**
 button that focuses that widget's name field in the inspector. Select a row to
 edit that widget in the right inspector. The headless UI tests exercise
-frontmost canvas selection, row reveal, and empty-canvas clearing. Manual QA
-found that a canvas text click did not visibly switch the inspector to the
-clicked caption; that direct-click behavior is under follow-up.
+frontmost canvas selection, row reveal, and empty-canvas clearing. Native macOS
+issue23 review confirmed that clicking a separate caption selects it and
+updates its row and inspector.
 
 The inspector provides:
 
 - **Name** — an editable widget name; duplicate names are allowed.
 - **Content** — the text, including multiple lines.
-- **Font family** — the persisted IDs `noto-sans` and `jetbrains-mono`.
+- **Font family** — the persisted IDs `noto-sans` and `jetbrains-mono`; bundled font assets remain #26 work.
 - **Font size** — the size in pixels.
 - **Color** — the text color, including its alpha (opacity) channel.
 - **Alignment** — **Left**, **Center**, or **Right**.
@@ -41,11 +41,18 @@ and Backward swap one adjacent layer without wrapping. Add, duplicate, and
 delete repair selection through the coordinator; switching overlays clears
 widget selection rather than targeting a stale widget.
 
-The File menu provides **Create Overlay** and **Save**. The Edit menu provides
-**Add Text**, **Duplicate**, **Delete**, **Forward**, and **Backward**. The View
-menu provides **Fit Canvas**, which recomputes the fit instead of adding a zoom
-mode. The Help menu opens **User Documentation**. These are the currently
-supported menu actions; focus-aware shortcuts and undo/redo remain #24 work.
+The accepted issue24 in-window menu contract (implementation verification is
+in progress) covers File > **Create Overlay**, **Save**, and guarded **Quit**; Edit >
+**Undo**, **Redo**, **Add Text**, **Duplicate**, **Delete**, **Forward**, and
+**Backward**; View > **Fit Canvas**, which recomputes the fit instead of adding
+a zoom mode; and Help > **User Documentation**. Undo/redo and other document
+commands follow the focus
+and pending-edit rules in [FDR-006](../fdr/FDR-006-guarded-editor-quit.md).
+The default macOS native application menu, including About, Hide, and Quit, is
+disabled; there is no placeholder Settings action while #25 remains deferred.
+Issue24 runtime implementation and native close verification are in progress;
+see the [runtime evidence checkpoint](../measurements/issue24-runtime-evidence.md)
+and [native close checklist](../measurements/issue24-native-close-validation.md).
 
 Drag the selected widget on the center canvas. Its position stays within the
 model's canvas bounds, and dragging preserves the grab offset. The preview is a

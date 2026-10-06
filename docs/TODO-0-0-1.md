@@ -2,7 +2,7 @@
 
 **Status:** Complete
 
-`0.0.1` is the first functional vertical slice of the application. The milestone is complete but remains unpublished; release publication is separate from this completed checklist.
+`0.0.1` is the first functional vertical slice of the application. The milestone is complete. Its GitHub Release was published on 2026-09-08 as a prerelease containing tagged source only; it has no uploaded assets and does not represent binary packaging or release of current 0.0.2 work.
 
 This document tracks milestone scope and completion. User-visible behavior is governed by [FDR-001: Overlay Editing and Local Browser Source](fdr/FDR-001-overlay-editing-and-local-browser-source.md), with the issue #8 URL and port additions recorded in [FDR-002: Browser-Source URL Actions and Port Settings](fdr/FDR-002-browser-source-url-actions-and-port-settings.md). This checklist does not replace Feature Decision Records (FDRs) for feature behavior or Architecture Decision Records (ADRs) for architectural rationale.
 

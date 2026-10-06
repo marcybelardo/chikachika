@@ -850,7 +850,7 @@ class Milestone002DecisionContractTests(unittest.TestCase):
 
     def test_002_milestone_contract_links(self):
         milestone = (ROOT / "docs/TODO-0-0-2.md").read_text(encoding="utf-8")
-        self.assertIn("**Status:** In progress — issue22 checkpoint delivered; issue23 layout and contrast review complete", milestone)
+        self.assertIn("**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 implementation verification is in progress; #25–#27 remain incomplete", milestone)
         for path in (
             "fdr/FDR-003-multi-widget-composition-workspace.md",
             "fdr/FDR-004-bundled-offline-text-fonts.md",
@@ -866,8 +866,8 @@ class Milestone002DecisionContractTests(unittest.TestCase):
         product_section = milestone[milestone.index("## Product Requirements"):milestone.index("## Confirmed Scope")]
         quality_section = milestone[milestone.index("## Quality Requirements"):milestone.index("## Explicitly Out of Scope")]
         # Issue22 model/persistence/browser work and issue23 workspace
-        # implementation are delivered; visual follow-up and future
-        # history/font/Settings-window/OBS requirements remain incomplete.
+        # implementation are delivered; issue24 runtime evidence and future
+        # font/Settings-window/OBS requirements remain incomplete.
         delivered = "\n".join(
             line for line in product_section.splitlines() + quality_section.splitlines()
             if line.startswith("- [x]")
@@ -876,7 +876,9 @@ class Milestone002DecisionContractTests(unittest.TestCase):
         self.assertIn("Save and restore", delivered)
         self.assertIn("A menu bar provides File, Edit, View, and Help actions", delivered)
         self.assertIn("The left sidebar lists widgets", delivered)
-        self.assertNotIn("Undo/redo", delivered)
+        self.assertRegex(milestone, r"(?m)^- \[ \] Session-local undo/redo")
+        self.assertRegex(milestone, r"(?m)^- \[ \] Undo/redo restores valid widget selection")
+        self.assertRegex(milestone, r"(?m)^- \[ \] Closing the editor or quitting with unsaved document changes")
         self.assertNotIn("bundled collection", delivered)
         self.assertNotIn("separate native window", delivered)
         self.assertNotIn("Exercise creation, composition, saving, restart, and OBS browser-source use", delivered)
@@ -973,7 +975,7 @@ class Issue22DocumentationCheckpointTests(unittest.TestCase):
             self.assertIn(anchor, normalized, anchor)
 
         # This checkpoint is not the complete 0.0.2 milestone.
-        self.assertIn("**Status:** In progress — issue22 checkpoint delivered", milestone)
+        self.assertIn("**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 implementation verification is in progress; #25–#27 remain incomplete", milestone)
         for issue in range(23, 28):
             self.assertIn(f"#{issue}", milestone, issue)
         self.assertIn("#23", readme)
@@ -1052,7 +1054,11 @@ class Issue23DocumentationCheckpointTests(unittest.TestCase):
         self.assertIn("Headless pointer tests confirm canvas clicks", milestone)
         self.assertIn("separate QA variant initialized at 1024×640", normalized)
         self.assertIn("server readiness was not checked in that variant", normalized)
-        self.assertIn("issue23 layout and contrast review complete", milestone)
+        self.assertIn("issue22 and issue23 checkpoints delivered", milestone)
+        self.assertIn("issue24 implementation verification is in progress", milestone)
+        self.assertIn("separate caption click updates its row and inspector", normalized)
+        self.assertNotIn("canvas text click did not visibly switch", normalized)
+        self.assertNotIn("that direct-click behavior is under follow-up", normalized)
         self.assertNotIn("the #23 resizable three-panel layout and overlap behavior remain incomplete", normalized)
 
     def test_issue23_documentation_checkpoint_names_gui_evidence(self):
@@ -1063,6 +1069,122 @@ class Issue23DocumentationCheckpointTests(unittest.TestCase):
                 self.assertIn(test_name, milestone, test_name)
                 self.assertRegex(gui_source, rf"(?m)^\s*fn {test_name}\s*\(", test_name)
         self.assertIn("issue23_documentation_checkpoint", milestone)
+
+
+class Issue24DocumentationContractTests(unittest.TestCase):
+    def _read(self, relative):
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_issue24_documentation_checkpoint(self):
+        milestone = self._read("docs/TODO-0-0-2.md")
+        evidence = self._read("docs/measurements/issue24-runtime-evidence.md")
+        native = self._read("docs/measurements/issue24-native-close-validation.md")
+
+        self.assertIn("issue24 implementation verification is in progress", milestone)
+        for path in ("README.md", "docs/user/README.md", "docs/user/overlay-workflow.md"):
+            text = re.sub(r"\s+", " ", self._read(path))
+            self.assertIn("implementation verification is in progress", text, path)
+        self.assertIn("#25–#27 remain incomplete", milestone)
+        self.assertIn("no AC.2–AC.7 result is recorded as passed", evidence)
+        self.assertIn("do not exercise runtime features", evidence)
+        self.assertIn("Pending manual macOS and Linux QA", native)
+        self.assertIn("macOS 27.0, build 26A428", native)
+        self.assertIn("no native scenario has been executed", native)
+        self.assertIn("1024×640", native)
+        self.assertIn("1280×800", native)
+        self.assertIn("OS shutdown", native)
+
+    def test_issue24_documentation_checkpoint_names_runtime_evidence(self):
+        evidence = self._read("docs/measurements/issue24-runtime-evidence.md")
+        expected = (
+            "workspace_history_command_matrix",
+            "history_selection_restoration_matrix",
+            "history_capacity_and_redo_invalidation",
+            "grouped_inspector_text_edits",
+            "grouped_numeric_and_color_gestures",
+            "drag_commit_cancel_and_live_updates",
+            "pending_edit_command_boundaries",
+            "history_restoration_live_sse",
+            "undo_redo_overlay_delete_routes_and_streams",
+            "collection_restore_preflight_is_atomic",
+            "history_restore_failure_preserves_workspace",
+            "html_snapshot_revision_pair",
+            "restart_revision_initialization",
+            "save_edit_undo_clean",
+            "history_eviction_does_not_change_dirty_baseline",
+            "failed_save_preserves_history_and_pending_work",
+            "history_is_session_only",
+            "focus_safe_shortcut_matrix",
+            "focused_text_native_undo_and_newline",
+            "issue24_menu_actions_and_enabled_states",
+            "close_prompt_save_discard_cancel_matrix",
+            "close_save_failure_keeps_work_and_server",
+            "quit_while_text_focused_resolves_pending_edit",
+            "accepted_close_shuts_down_once",
+        )
+        for name in expected:
+            self.assertIn(f"`{name}`", evidence, name)
+        for criterion in ("AC.2", "AC.3", "AC.4", "AC.5", "AC.6", "AC.7"):
+            self.assertIn(criterion, evidence)
+        self.assertEqual(evidence.count("| Pending verification |"), 6)
+
+    def test_published_v001_prerelease_documentation(self):
+        documents = "\n".join(
+            self._read(path)
+            for path in ("AGENTS.md", "README.md", "docs/TODO-0-0-1.md", "docs/RELEASING.md")
+        )
+        self.assertIn("https://github.com/marcybelardo/chikachika/releases/tag/v0.0.1", documents)
+        self.assertIn("2026-09-08T16:02:10Z", documents)
+        self.assertIn("prerelease", documents)
+        self.assertIn("tagged source only", documents)
+        self.assertIn("no uploaded assets", documents)
+        self.assertIn("not a binary package", documents)
+        self.assertNotIn("remains unpublished", documents)
+        self.assertNotIn("Release publication has not yet been recorded", documents)
+        self.assertNotIn("Until `0.0.1` is released", documents)
+
+    def test_issue23_obsolete_warning_removed(self):
+        guide = self._read("docs/user/README.md")
+        workflow = self._read("docs/user/overlay-workflow.md")
+        milestone = self._read("docs/TODO-0-0-2.md")
+        all_living = "\n".join((guide, workflow, milestone))
+        self.assertIn("separate caption click updates its row and inspector", all_living)
+        self.assertNotIn("canvas text click did not visibly switch", all_living)
+        self.assertNotIn("direct-click behavior is under follow-up", all_living)
+        self.assertIn("server readiness was not checked in that variant", milestone)
+
+    def test_guarded_quit_fdr_contract(self):
+        fdr = self._read("docs/fdr/FDR-006-guarded-editor-quit.md")
+        index = self._read("docs/fdr/INDEX.md")
+        predecessor = self._read("docs/fdr/FDR-003-multi-widget-composition-workspace.md")
+        self.assertIn("**Status:** Accepted", fdr)
+        self.assertIn("**Date:** 2026-10-06", fdr)
+        self.assertIn("**Supersedes:** FDR-003", fdr)
+        self.assertIn("guarded File Quit", fdr)
+        self.assertIn("Cmd+Q", fdr)
+        self.assertIn("Native Linux window-manager close", fdr)
+        self.assertIn("default macOS native application menu", fdr)
+        self.assertIn("About, Hide, and Quit", fdr)
+        self.assertIn("OS shutdown", fdr)
+        self.assertIn("Force Quit", fdr)
+        self.assertIn("Do not add a placeholder Settings menu action", fdr)
+        self.assertIn("#25", fdr)
+        self.assertIn("#26", fdr)
+        self.assertIn("#27", fdr)
+        for scenario in (
+            "overlap_selection", "selected_widget_deletion", "overlay_switch_selection",
+            "duplicate_front", "layer_step", "drag_cancel", "cross_overlay_undo",
+            "absent_overlay_selection", "absent_widget_selection", "undo_overlay_delete",
+            "redo_overlay_delete", "save_edit_undo_clean", "failed_save",
+            "pending_text_then_undo", "pending_text_then_save", "redo_invalidation",
+            "ordinary_overlay_delete", "editor_close_dirty", "restart_revision_initialization",
+        ):
+            self.assertIn(f"`{scenario}`", fdr, scenario)
+        self.assertIn("[Superseded by FDR-006](FDR-006-guarded-editor-quit.md)", index)
+        self.assertIn("## Predecessor Clause Audit", predecessor)
+        self.assertIn("## History, Save, and Lifecycle Scenarios", predecessor)
+        self.assertIn("Settings alone are not actions", fdr)
+        self.assertIn("font-family IDs `noto-sans` and `jetbrains-mono`", fdr)
 
 
 class CollaborationArtifactContractTests(unittest.TestCase):

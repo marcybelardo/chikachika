@@ -10,6 +10,7 @@ Use [the FDR skill](../../.agents/skills/fdr/SKILL.md) to create, audit, or supe
 |---|---|---|---|
 | [FDR-001](FDR-001-overlay-editing-and-local-browser-source.md) | Overlay Editing and Local Browser Source | [Superseded by FDR-003](FDR-003-multi-widget-composition-workspace.md) | 2026-08-26 |
 | [FDR-002](FDR-002-browser-source-url-actions-and-port-settings.md) | Browser-Source URL Actions and Port Settings | Accepted | 2026-08-29 |
-| [FDR-003](FDR-003-multi-widget-composition-workspace.md) | Multi-Widget Composition Workspace | Accepted | 2026-09-17 |
+| [FDR-003](FDR-003-multi-widget-composition-workspace.md) | Multi-Widget Composition Workspace | [Superseded by FDR-006](FDR-006-guarded-editor-quit.md) | 2026-09-17 |
 | [FDR-004](FDR-004-bundled-offline-text-fonts.md) | Bundled Offline Text Fonts | Accepted | 2026-09-17 |
 | [FDR-005](FDR-005-singleton-native-settings-window.md) | Singleton Native Settings Window | Accepted | 2026-09-17 |
+| [FDR-006](FDR-006-guarded-editor-quit.md) | Guarded Editor Quit | Accepted | 2026-10-06 |

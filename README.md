@@ -20,14 +20,18 @@ fit-to-space canvas that preserves its aspect ratio, and a resizable inspector.
 The initial window size is 1280×800 logical pixels, with a 1024×640 minimum.
 List, canvas, and inspector use one coordinator-owned selection. Headless
 tests exercise frontmost overlap selection, empty-canvas clearing, row reveal,
-and fast clicks on a separate caption. Native QA confirmed the caption click
-updates its selected row and inspector.
+and fast clicks on a separate caption. Native macOS QA confirmed the caption
+click updates its selected row and inspector.
 Each row has a text type indicator and a Rename action. Overlay switching and
 lifecycle controls stay in a compact top strip.
 
-The current menus expose File > Create Overlay and Save; Edit > Add Text,
-Duplicate, Delete, Forward, and Backward; View > Fit Canvas; and Help > User
-Documentation. The compact status area shows save/server state, errors, and
+The issue24 in-window menu contract, whose implementation verification is in
+progress, covers File > Create Overlay, Save, and guarded Quit; Edit > Undo,
+Redo, Add Text, Duplicate, Delete, Forward, and Backward; View > Fit Canvas;
+and Help > User Documentation. Undo/redo and other document commands follow
+the focus and pending-edit rules in FDR-006. The default macOS native
+application menu, including About, Hide, and Quit, is disabled; there is no
+placeholder Settings action while #25 remains deferred. The compact status area shows save/server state, errors, and
 readiness-gated Copy URL and Open output actions. Its Local server settings
 section is collapsed by default; the separate native Settings window is #25
 work.
@@ -42,11 +46,15 @@ checked at the larger size only.
 
 ## Remaining 0.0.2 work
 
-Undo/redo, focus-aware shortcuts, and unsaved-close recovery remain #24 work.
-The separate native Settings window remains #25 work. Bundled font assets and
-fidelity remain #26 work; font IDs are persisted and selectable, but no font
-files are bundled yet. macOS/Linux OBS and resource verification remain #27
-work. Release publication is tracked separately from milestone completion.
+Issue #24's history, focus-safe shortcuts, and guarded in-window close/quit
+behavior are in implementation verification; named runtime tests and native
+macOS/Linux checks are recorded as pending in the [issue24 evidence
+checkpoint](docs/measurements/issue24-runtime-evidence.md). The separate native
+Settings window remains #25 work. Bundled font assets and fidelity remain #26
+work; font IDs are persisted and selectable, but no font files are bundled yet.
+macOS/Linux OBS and resource verification remain #27 work. The v0.0.1 GitHub
+Release is a published tagged-source prerelease with no uploaded assets; it is
+not a binary package or a release of current 0.0.2 work.
 
 ## Run from source
 
@@ -105,3 +113,4 @@ to Rust. CI runs the Rust checks on Ubuntu and macOS.
 - [`0.0.1` milestone evidence](docs/TODO-0-0-1.md)
 - [`0.0.2` milestone and issue22/issue23 checkpoints](docs/TODO-0-0-2.md)
 - [Release process](docs/RELEASING.md)
+- [Issue24 native close validation](docs/measurements/issue24-native-close-validation.md)
