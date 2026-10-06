@@ -200,7 +200,11 @@ impl OverlayHub {
                 existing.expect("unchanged entries exist").revision
             } else {
                 let prior = existing
-                    .map(|entry| entry.revision)
+                    .map(|entry| {
+                        entry
+                            .revision
+                            .max(high_water.get(&id).copied().unwrap_or(0))
+                    })
                     .or_else(|| high_water.get(&id).copied());
                 match prior {
                     Some(current) => {
@@ -230,11 +234,11 @@ impl OverlayHub {
             );
         }
         // This is the commit point: all fallible checks and allocations are done.
+        *entries = replacement;
+        *high_water = next_high_water;
         for (sender, representation) in publications {
             sender.send_replace(representation);
         }
-        *entries = replacement;
-        *high_water = next_high_water;
         Ok(())
     }
     pub fn revision(&self, id: OverlayId) -> Result<Option<u64>, HubError> {
