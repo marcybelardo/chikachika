@@ -51,7 +51,11 @@ struct TransientState {
     active_edit: Option<EditTarget>,
     gesture_edit: Option<EditTarget>,
     text_editor_ids: Vec<egui::Id>,
+    seen_text_editor_ids: Vec<egui::Id>,
+    editor_selection: Option<(OverlayId, TextWidgetId)>,
+    editor_selection_initialized: bool,
     focused_text_editor: Option<egui::Id>,
+    preview_error: Option<String>,
     close_prompt_open: bool,
     allow_close: bool,
     close_error: Option<String>,
@@ -391,6 +395,11 @@ impl ChikachikaApp {
         let target = coordinator
             .selected_overlay_id()
             .zip(coordinator.selected_widget_id());
+        if transient.editor_selection_initialized && transient.editor_selection != target {
+            reset_text_undo(context, transient.seen_text_editor_ids.iter().copied());
+        }
+        transient.editor_selection = target;
+        transient.editor_selection_initialized = true;
         if transient.inspector_target != target {
             clear_inspector_state(transient);
             transient.inspector_target = target;
@@ -796,6 +805,9 @@ impl ChikachikaApp {
                     ui.label("Drag the selected widget to move it");
                     ui.add_space(8.0);
                     render_collection_preview(ui, coordinator, transient, id);
+                    if let Some(error) = transient.preview_error.as_deref() {
+                        ui.colored_label(egui::Color32::from_rgb(239, 83, 80), error);
+                    }
                     ui.add_space(4.0);
                     ui.weak(format!(
                         "{} × {} transparent output",
@@ -830,6 +842,11 @@ impl ChikachikaApp {
         }
         deferred_actions.extend(shortcut_actions);
         render_close_prompt(context, transient, &mut deferred_actions);
+        for id in transient.text_editor_ids.iter().copied() {
+            if !transient.seen_text_editor_ids.contains(&id) {
+                transient.seen_text_editor_ids.push(id);
+            }
+        }
         apply_deferred_actions(context, coordinator, transient, deferred_actions);
     }
 }
@@ -871,7 +888,18 @@ fn apply_deferred_actions(
                 });
                 match result {
                     Ok(true) => {
-                        reset_text_undo(context, transient.text_editor_ids.iter().copied());
+                        reset_text_undo(
+                            context,
+                            transient
+                                .seen_text_editor_ids
+                                .iter()
+                                .chain(transient.text_editor_ids.iter())
+                                .copied(),
+                        );
+                        transient.editor_selection = coordinator
+                            .selected_overlay_id()
+                            .zip(coordinator.selected_widget_id());
+                        transient.editor_selection_initialized = true;
                         if let Some(focused) = transient.focused_text_editor
                             && transient.text_editor_ids.contains(&focused)
                         {
@@ -1888,6 +1916,51 @@ fn drag_matches(drag: Option<PreviewDrag>, overlay_id: OverlayId, widget_id: Tex
     drag.is_some_and(|drag| drag.overlay_id == overlay_id && drag.widget_id == widget_id)
 }
 
+fn select_preview_widget(
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+    widget_id: TextWidgetId,
+) -> bool {
+    match coordinator.select_widget(widget_id) {
+        Ok(()) => {
+            transient.preview_error = None;
+            true
+        }
+        Err(error) => {
+            transient.preview_drag = None;
+            transient.preview_error = Some(error.to_string());
+            false
+        }
+    }
+}
+
+fn begin_preview_drag(
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+    drag: PreviewDrag,
+) -> Result<(), String> {
+    let target = edit_target(drag.overlay_id, drag.widget_id, "canvas_position");
+    coordinator
+        .begin_edit(target.clone())
+        .map_err(|error| error.to_string())?;
+    transient.active_edit = Some(target);
+    transient.preview_error = None;
+    Ok(())
+}
+
+fn update_preview_drag(
+    coordinator: &mut HeadlessCoordinator,
+    drag: PreviewDrag,
+    position: Position,
+) -> Result<(), String> {
+    let target = edit_target(drag.overlay_id, drag.widget_id, "canvas_position");
+    coordinator
+        .update_edit(&target, |overlay| {
+            overlay.set_widget_position(drag.widget_id, position)
+        })
+        .map_err(|error| error.to_string())
+}
+
 fn render_collection_preview(
     ui: &mut egui::Ui,
     coordinator: &mut HeadlessCoordinator,
@@ -1915,13 +1988,12 @@ fn render_collection_preview(
     );
     match selection {
         Some(PreviewSelection::Widget(widget_id)) => {
-            if coordinator.select_widget(widget_id).is_ok() {
+            if select_preview_widget(coordinator, transient, widget_id) {
                 if !drag_matches(transient.preview_drag, overlay_id, widget_id) {
-                    if let Some(drag) = transient.preview_drag.take() {
-                        let target =
-                            edit_target(drag.overlay_id, drag.widget_id, "canvas_position");
-                        let _ = coordinator.commit_edit(&target);
-                        transient.active_edit = None;
+                    if let Some(drag) = transient.preview_drag {
+                        if let Err(error) = commit_preview_drag(coordinator, transient, drag) {
+                            transient.preview_error = Some(error);
+                        }
                     }
                 }
                 transient.inspector_target = Some((overlay_id, widget_id));
@@ -1931,6 +2003,7 @@ fn render_collection_preview(
         }
         Some(PreviewSelection::Clear) => {
             coordinator.clear_widget_selection();
+            transient.preview_error = None;
             clear_inspector_state(transient);
             transient.inspector_target = None;
         }
@@ -1946,26 +2019,44 @@ fn render_collection_preview(
         .filter(|drag| drag.overlay_id == overlay_id)
     {
         let target = edit_target(overlay_id, drag.widget_id, "canvas_position");
-        if coordinator.pending_edit_target() != Some(&target) {
-            let _ = coordinator.begin_edit(target.clone());
-            transient.active_edit = Some(target.clone());
+        if coordinator.pending_edit_target() != Some(&target)
+            && let Err(error) = begin_preview_drag(coordinator, transient, drag)
+        {
+            transient.preview_error = Some(error);
         }
     }
-    if let Some((widget_id, position)) = moved {
-        let target = edit_target(overlay_id, widget_id, "canvas_position");
-        let _ = coordinator.update_edit(&target, |overlay| {
-            overlay.set_widget_position(widget_id, position)
-        });
+    if let Some((_, position)) = moved
+        && let Some(drag) = transient.preview_drag
+    {
+        match update_preview_drag(coordinator, drag, position) {
+            Ok(()) => transient.preview_error = None,
+            Err(error) => transient.preview_error = Some(error),
+        }
     }
     let escape_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
     if stopped
         && !escape_pressed
-        && let Some(drag) = transient.preview_drag.take()
+        && let Some(drag) = transient.preview_drag
     {
-        let target = edit_target(overlay_id, drag.widget_id, "canvas_position");
-        let _ = coordinator.commit_edit(&target);
-        transient.active_edit = None;
+        match commit_preview_drag(coordinator, transient, drag) {
+            Ok(()) => transient.preview_error = None,
+            Err(error) => transient.preview_error = Some(error),
+        }
     }
+}
+
+fn commit_preview_drag(
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+    drag: PreviewDrag,
+) -> Result<(), String> {
+    let target = edit_target(drag.overlay_id, drag.widget_id, "canvas_position");
+    coordinator
+        .commit_edit(&target)
+        .map_err(|error| error.to_string())?;
+    transient.preview_drag = None;
+    transient.active_edit = None;
+    Ok(())
 }
 
 fn render_canvas_preview(
@@ -3288,6 +3379,66 @@ mod tests {
             .add_widget(overlay_id, TextWidget::new("Front"))
             .unwrap();
         (overlay_id, vec![front, middle, back])
+    }
+
+    #[test]
+    fn failed_preview_transitions_keep_recoverable_state() {
+        let mut coordinator = ready_app();
+        let overlay_id = coordinator.create_overlay("Live", 320, 240).unwrap();
+        let widget_ids = [
+            coordinator
+                .add_widget(overlay_id, TextWidget::new("Front"))
+                .unwrap(),
+            coordinator
+                .add_widget(overlay_id, TextWidget::new("Back"))
+                .unwrap(),
+        ];
+        let foreign_overlay = coordinator.create_overlay("Other", 320, 240).unwrap();
+        let foreign_widget = coordinator
+            .add_widget(foreign_overlay, TextWidget::new("Other"))
+            .unwrap();
+        coordinator.select_overlay(overlay_id).unwrap();
+        coordinator.select_widget(widget_ids[0]).unwrap();
+
+        let invalid_drag = PreviewDrag {
+            overlay_id,
+            widget_id: foreign_widget,
+            pointer_offset: egui::Vec2::ZERO,
+            start_position: Position::new(0.0, 0.0),
+        };
+        let mut transient = TransientState::default();
+        transient.preview_drag = Some(invalid_drag);
+        assert!(!select_preview_widget(
+            &mut coordinator,
+            &mut transient,
+            foreign_widget
+        ));
+        assert!(transient.preview_drag.is_none());
+        assert!(transient.preview_error.is_some());
+
+        transient.preview_drag = Some(invalid_drag);
+        assert!(begin_preview_drag(&mut coordinator, &mut transient, invalid_drag).is_err());
+        assert!(transient.active_edit.is_none());
+        assert_eq!(transient.preview_drag, Some(invalid_drag));
+
+        let name_target = edit_target(overlay_id, widget_ids[0], "name");
+        coordinator.begin_edit(name_target.clone()).unwrap();
+        let position = Position::new(5.0, 6.0);
+        assert!(update_preview_drag(&mut coordinator, invalid_drag, position).is_err());
+        assert_eq!(coordinator.pending_edit_target(), Some(&name_target));
+
+        let active_target = edit_target(overlay_id, widget_ids[0], "canvas_position");
+        transient.active_edit = Some(active_target);
+        transient.preview_drag = Some(PreviewDrag {
+            overlay_id,
+            widget_id: widget_ids[0],
+            pointer_offset: egui::Vec2::ZERO,
+            start_position: Position::new(0.0, 0.0),
+        });
+        let active_drag = transient.preview_drag.unwrap();
+        assert!(commit_preview_drag(&mut coordinator, &mut transient, active_drag).is_err());
+        assert_eq!(transient.preview_drag, Some(active_drag));
+        assert!(transient.active_edit.is_some());
     }
 
     fn assert_workspace_geometry(harness: &ScenarioHarness, size: egui::Vec2) {
@@ -5512,6 +5663,67 @@ mod tests {
                 .unwrap()
                 .name(),
             "Obsolete"
+        );
+    }
+
+    #[test]
+    fn document_undo_cannot_restore_native_text_undo_from_previous_selection() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        let primary = if cfg!(target_os = "macos") {
+            egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL
+        };
+
+        harness.pointer_click_control("Widget name").unwrap();
+        harness.key_with_modifiers(egui::Key::A, true, primary);
+        harness.event(egui::Event::Text("Native edit".to_owned()));
+        harness.key(egui::Key::Enter, true);
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .name(),
+            "Native edit"
+        );
+
+        let second_row = harness.widget_selector_rect(ids[1]).unwrap();
+        harness.pointer_click(second_row.center());
+        harness.pointer_click_control("Widget name").unwrap();
+        harness.key_with_modifiers(egui::Key::A, true, primary);
+        harness.event(egui::Event::Text("Document edit".to_owned()));
+        harness.key(egui::Key::Enter, true);
+        harness.frame();
+        harness.pointer_click_control("Edit menu").unwrap();
+        harness.frame();
+        harness.pointer_click_control("Edit/Undo").unwrap();
+        harness.frame();
+
+        let first_row = harness.widget_selector_rect(ids[0]).unwrap();
+        harness.pointer_click(first_row.center());
+        harness.pointer_click_control("Widget name").unwrap();
+        harness.key_with_modifiers(egui::Key::Z, true, primary);
+        harness.frame();
+
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .name(),
+            "Native edit"
         );
     }
 
