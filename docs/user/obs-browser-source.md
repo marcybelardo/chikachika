@@ -72,8 +72,8 @@ separate QA variant initialized at 1024×640 confirmed the panels, controls,
 fitted canvas, overlapping light/dark text, and status/error area. Server
 readiness was not verified in that variant because its test port was occupied.
 An overlapping canvas hit retained the frontmost selection in manual QA.
-Session history, focus-aware
-shortcuts, and unsaved-close recovery remain #24 work; the separate native
-Settings window remains #25 work; bundled font assets/fidelity remain #26 work;
-and macOS/Linux OBS certification remains #27 work tracked in
-[TODO-0-0-2](../TODO-0-0-2.md).
+Issue #24 automated history, focus-aware shortcut, save, and close-flow checks
+passed at `3d29d1f`; native macOS/Linux close, menu, and shortcut verification
+remains pending. The separate native Settings window remains #25 work; bundled
+font assets/fidelity remain #26 work; and macOS/Linux OBS certification remains
+#27 work tracked in [TODO-0-0-2](../TODO-0-0-2.md).

@@ -1,8 +1,8 @@
 # `0.0.2` Milestone
 
-**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 implementation verification is in progress; #25–#27 remain incomplete
+**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 automated Rust evidence passed at `3d29d1f`, while native verification remains pending; #25–#27 remain incomplete
 
-`0.0.2` develops the completed vertical slice into a usable overlay composition workspace. The central canvas, left widget list, and right properties inspector are the agreed layout. Milestone scope was confirmed on 2026-09-08, and the dependent design contracts were accepted on 2026-09-17. Issue22’s ordered model, format-2 persistence, coordinator selection/baseline behavior, native multi-widget controls, and complete browser array reconciliation are delivered. Issue23’s three-panel layout and pointer-selection paths are covered by headless GUI tests. Corrected-build visual inspection at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so server readiness was not checked in that variant. An overlapping canvas hit retained frontmost selection in manual QA, as expected from the hitboxes. Issue #24 runtime and native verification is in progress; #25–#27 remain incomplete.
+`0.0.2` develops the completed vertical slice into a usable overlay composition workspace. The central canvas, left widget list, and right properties inspector are the agreed layout. Milestone scope was confirmed on 2026-09-08, and the dependent design contracts were accepted on 2026-09-17. Issue22’s ordered model, format-2 persistence, coordinator selection/baseline behavior, native multi-widget controls, and complete browser array reconciliation are delivered. Issue23’s three-panel layout and pointer-selection paths are covered by headless GUI tests. Corrected-build visual inspection at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so server readiness was not checked in that variant. An overlapping canvas hit retained frontmost selection in manual QA, as expected from the hitboxes. Issue #24's automated Rust evidence passed at source checkpoint `3d29d1f`; native macOS/Linux verification remains pending, including macOS operator-assisted Accessibility access. Issues #25–#27 remain incomplete.
 
 This document tracks milestone scope and completion. It does not replace Feature Decision Records (FDRs) for user-visible behavior or Architecture Decision Records (ADRs) for architectural rationale. [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) governs the accepted workspace behavior except for the guarded quit and macOS native-menu changes in [FDR-006](fdr/FDR-006-guarded-editor-quit.md); [FDR-004](fdr/FDR-004-bundled-offline-text-fonts.md) and [FDR-005](fdr/FDR-005-singleton-native-settings-window.md) govern fonts and Settings. [ADR-006](adr/ADR-006-ordered-authoritative-widget-model.md), [ADR-007](adr/ADR-007-version-2-overlay-document-persistence.md), [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md), and [ADR-009](adr/ADR-009-secondary-native-settings-viewport-lifecycle.md) govern its architecture. These records resolve design; their Accepted status does not claim runtime implementation.
 
@@ -33,7 +33,7 @@ The focused Python contract is `issue22_documentation_checkpoint` in `tests/test
 - **Delivered at the issue23 checkpoint:** File > Create Overlay/Save; Edit > Add Text/Duplicate/Delete/Forward/Backward; View > Fit Canvas; Help > User Documentation. Fit Canvas recomputes the fit; zoom and pan remain out of scope. The guarded File > Quit and macOS native-menu behavior is the issue24 decision in FDR-006; its implementation verification is in progress.
 - **Delivered:** Compact status area with save/server state and visible errors, readiness-gated Copy URL/Open output, and Local server settings collapsed by default. Port settings remain in this section until the separate native Settings window in #25 is implemented.
 - **Headless evidence:** egui tests cover supported menu actions, readiness-gated output actions, row rename focus, frontmost overlap selection, obscured-row selection, empty-canvas clearing, row reveal, overlay switching, deletion fallback, editor guides excluded from browser output, and canvas geometry at 1024×640 and 1280×800.
-- **Visual review:** Corrected-build review at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all three panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so readiness was not verified there. List selection showed the inspector and cyan outline; overlapping canvas clicks retained the frontmost selection.
+- **Visual review:** Corrected-build review at 1280×800 confirmed near-black and white overlapping text legible on the lighter checkerboard with all three panels visible. A separate QA variant initialized at 1024×640 confirmed the panels, controls, fitted canvas, overlapping light/dark text, and status/error area. Its test port was occupied, so readiness was not verified there. List selection showed the inspector and cyan outline; overlapping canvas clicks retained the frontmost selection. This is issue23 visual evidence and does not replace the still-pending issue24 native close/menu/shortcut QA.
 
 ### Named issue23 evidence
 
@@ -75,12 +75,12 @@ The Python contract is `issue23_documentation_checkpoint` in `tests/test_docs.py
 - [x] A user can change widget stacking order through explicit forward/backward actions, reflected immediately in the native list and preview.
 - [x] A user can move the selected widget by dragging and by editing its coordinates; dragging preserves the grab offset and respects the defined canvas bounds.
 - [x] The inspector supports multiline content, font size, RGBA color, alignment, position, and the two persisted font-family IDs for the selected text widget.
-- [ ] Core actions have documented keyboard shortcuts that respect text-field focus; editing text must not accidentally delete or manipulate its widget. Issue24 implementation verification is in progress; see the pending runtime evidence checkpoint.
-- [ ] Session-local undo/redo supports widget creation, duplication, deletion, naming, content, styling, movement, and layer ordering; a completed drag is one undo action.
-- [ ] Undo/redo restores valid widget selection and publishes the restored document state to connected browser sources. A new edit after undo invalidates redo history.
-- [ ] Closing the editor or quitting with unsaved document changes offers Save, Discard, and Cancel; a failed save keeps the editor open with the work intact.
+- [x] Automated GUI tests verify core shortcut focus routing; editing text does not trigger document delete/manipulation shortcuts. Native macOS/Linux shortcut behavior remains manual QA.
+- [x] Automated history tests cover widget and overlay commands, grouped edits and drags, selection restoration, bounded shared capacity, and redo invalidation.
+- [x] Automated tests verify restored state is published to connected browser routes/streams and that a new edit after Undo invalidates Redo.
+- [x] Automated close-flow tests cover Save, Discard, Cancel, pending-edit resolution, and failed-save preservation. Native macOS/Linux close behavior and prompt layout remain manual QA.
 
-**Progress note:** Native controls and selection-targeted inspector edits are covered by the issue23 headless GUI scenario tests. History, keyboard focus/shortcuts, and guarded close behavior are the issue24 scope; runtime test verification is in progress and native checks remain pending.
+**Progress note:** Issue24 automated Rust evidence passed at `3d29d1f` (131 tests for the source checkpoint; rerun after this documentation change). Native close, menu, shortcut, and prompt-layout scenarios remain pending; macOS UI automation was blocked because System Events UI-element access was disabled. See the runtime and native evidence checkpoints.
 
 ### Bundled fonts
 
@@ -150,20 +150,20 @@ Zoom/pan controls, widget hiding/locking, and more advanced selection remain def
 
 ### Resolved design contracts
 
-- [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md), [FDR-006](fdr/FDR-006-guarded-editor-quit.md), and [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md) define the workspace timeline, text/gesture grouping, overlay lifecycle, selection restoration, content-based dirty state, fresh delivery revisions, and guarded close behavior. Issue24 implementation verification is in progress; expected test names and pending native scenarios are tracked in [the runtime evidence checkpoint](measurements/issue24-runtime-evidence.md) and [native close validation](measurements/issue24-native-close-validation.md).
+- [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md), [FDR-006](fdr/FDR-006-guarded-editor-quit.md), and [ADR-008](adr/ADR-008-coordinator-owned-workspace-history.md) define the workspace timeline, text/gesture grouping, overlay lifecycle, selection restoration, content-based dirty state, fresh delivery revisions, and guarded close behavior. Issue24 implementation verification is in progress; expected test names and pending native scenarios are tracked in [the runtime evidence checkpoint](measurements/issue24-runtime-evidence.md), which records automated Rust coverage passed at `3d29d1f`, and [native close validation](measurements/issue24-native-close-validation.md), which remains pending.
 - [FDR-004](fdr/FDR-004-bundled-offline-text-fonts.md) selects pinned Noto Sans Regular and JetBrains Mono Regular assets with bounded Latin-focused coverage, SIL OFL 1.1 notice obligations, U+FFFD replacement, and explicit issue #26 binary/runtime verification; assets remain undelivered.
 - [FDR-003](fdr/FDR-003-multi-widget-composition-workspace.md) defines a dark neutral workspace at 1280×800 initial and 1024×640 minimum logical size, including panel, spacing, typography, checkerboard, selection, hover, disabled, and error targets; issue23 code and headless interaction/geometry checks are delivered, layout has been visually reviewed at both sizes, and headless tests cover separate and overlapping canvas hits.
 - [ADR-006](adr/ADR-006-ordered-authoritative-widget-model.md) and [ADR-007](adr/ADR-007-version-2-overlay-document-persistence.md) define the delivered ordered model and format-2 persistence contracts. [FDR-005](fdr/FDR-005-singleton-native-settings-window.md) and [ADR-009](adr/ADR-009-secondary-native-settings-viewport-lifecycle.md) define the not-yet-delivered singleton Settings lifecycle.
 
-These design items are accepted decisions, not by themselves evidence of runtime completion. The unchecked requirements below remain the source of truth for implementation completion.
+These design items are accepted decisions, not by themselves evidence of runtime completion. Checked issue24 requirements below refer to automated Rust coverage at `3d29d1f`; native platform checks remain separately pending in the evidence checkpoint.
 
 ## Quality Requirements
 
 - [x] Tests cover widget identity, ordered mutations, selection validity, persistence round trips, and non-destructive rejection of unsupported saved formats.
 - [x] Tests cover browser projection and live changes for multiple widgets, including reorder and removal.
-- [ ] Undo/redo tests cover grouped edits, deletion restoration, redo invalidation, and dirty state around saving; close-flow checks cover Save, Discard, Cancel, and save failure.
+- [x] Automated Rust tests cover grouped edits, deletion/selection restoration, redo invalidation, dirty state around saving, and close-flow Save/Discard/Cancel/save failure; native close and shortcut scenarios remain pending manual QA.
 - [x] Headless egui pointer scenarios cover obscured-widget selection, overlap selection, row reveal, empty-canvas clearing, overlay switching, and deletion fallback.
-- [ ] Verify keyboard shortcuts and text-field focus behavior for #24; expected Rust cases are listed as pending in [the runtime evidence checkpoint](measurements/issue24-runtime-evidence.md).
+- [x] Automated GUI tests verify keyboard shortcuts and text-field focus behavior for #24; native macOS/Linux behavior remains pending in [the runtime evidence checkpoint](measurements/issue24-runtime-evidence.md).
 - [ ] Measure representative idle resource use and responsiveness with a documented multi-widget workload; investigate material regressions against the [0.0.1 measurement](measurements/0.0.1-idle-resource-usage.md).
 - [x] Update setup, editing, settings, and troubleshooting guides for the issue22 and issue23 checkpoints.
 - [x] Record current feature and architecture contracts using the owning documentation skills; update indexes, glossary, and current architecture as implementation makes them stale.
@@ -191,14 +191,14 @@ These design items are accepted decisions, not by themselves evidence of runtime
 | Exact bundled fonts, coverage, replacement, and licenses | #26 | Pinned-byte lengths and SHA-256, cmap/U+FFFD checks, complete SIL OFL 1.1 notices, decoded data-URL equality, and native/browser rendering |
 | Combined OBS/platform and representative-resource verification | #27 | macOS/Linux OBS composition, stable URLs, transparent stacking/live updates, Settings failures, font behavior, and history memory measurement |
 
-The Python documentation tests validate that accepted contracts, assignments, and issue22/issue23/issue24 documentation claims name evidence; they do not exercise runtime features or prove the named Rust/native checks passed.
+The Python documentation tests validate accepted contracts, assignments, source-verified Rust test names, and evidence/status claims; they do not exercise runtime features or prove Rust/native checks passed.
 
 ## Implementation Sequence
 
 1. Record the changed feature/model contracts and settle the dependent design details. **Design complete on 2026-09-17; issue22 and issue23 implementation checkpoints are delivered.**
 2. Establish ordered widget state, mutation behavior, saved-format handling, and complete browser array reconciliation (#22). **Checkpoint delivered in the current source branch.**
 3. Build the workspace panels and shared selection behavior (#23). **Layout and headless checks delivered; corrected visual review covered the panel/canvas layout at 1280×800 and a separate 1024×640 QA variant. Headless tests cover separate and overlapping canvas hits and the inspector update.**
-4. Complete widget editing, layer actions, and agreed recovery/keyboard behavior (#24). **Pending history, shortcuts, and close recovery.**
+4. Complete widget editing, layer actions, and agreed recovery/keyboard behavior (#24). **Automated Rust evidence passed at `3d29d1f`; native macOS/Linux close, menu, and shortcut verification remains pending.**
 5. Move Settings into a native window (#25). **Pending.**
 6. Integrate bundled fonts (#26), then complete combined platform/OBS verification and documentation (#27). **Pending; no font files are bundled yet.**
 

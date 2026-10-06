@@ -25,11 +25,14 @@ click updates its selected row and inspector.
 Each row has a text type indicator and a Rename action. Overlay switching and
 lifecycle controls stay in a compact top strip.
 
-The issue24 in-window menu contract, whose implementation verification is in
-progress, covers File > Create Overlay, Save, and guarded Quit; Edit > Undo,
-Redo, Add Text, Duplicate, Delete, Forward, and Backward; View > Fit Canvas;
-and Help > User Documentation. Undo/redo and other document commands follow
-the focus and pending-edit rules in FDR-006. The default macOS native
+Issue #24's automated Rust implementation checks passed at source checkpoint
+`3d29d1f`; native macOS/Linux verification remains pending. The in-window menu
+provides File > Create Overlay, Save, and guarded Quit; Edit > Undo, Redo, Add
+Text, Duplicate, Delete, Forward, and Backward; View > Fit Canvas; and Help >
+User Documentation. Undo/redo follows document history unless a text editor has
+focus, where text-native undo/redo applies; document shortcuts are suppressed in
+other focused fields. Saving commits pending text edits. Dirty close offers Save,
+Discard, or Cancel; discard does not write document changes. The default macOS native
 application menu, including About, Hide, and Quit, is disabled; there is no
 placeholder Settings action while #25 remains deferred. The compact status area shows save/server state, errors, and
 readiness-gated Copy URL and Open output actions. Its Local server settings
@@ -46,10 +49,12 @@ checked at the larger size only.
 
 ## Remaining 0.0.2 work
 
-Issue #24's history, focus-safe shortcuts, and guarded in-window close/quit
-behavior are in implementation verification; named runtime tests and native
-macOS/Linux checks are recorded as pending in the [issue24 evidence
-checkpoint](docs/measurements/issue24-runtime-evidence.md). The separate native
+Issue #24 automated Rust history, focus-safe shortcut, save, and guarded
+close-flow checks passed at `3d29d1f`; native menu, shortcut, and close
+verification remains pending in the [issue24 runtime evidence
+checkpoint](docs/measurements/issue24-runtime-evidence.md) and [native close
+checklist](docs/measurements/issue24-native-close-validation.md). macOS UI
+automation needs operator-enabled Accessibility access. The separate native
 Settings window remains #25 work. Bundled font assets and fidelity remain #26
 work; font IDs are persisted and selectable, but no font files are bundled yet.
 macOS/Linux OBS and resource verification remain #27 work. The v0.0.1 GitHub

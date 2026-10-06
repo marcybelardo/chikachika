@@ -1,20 +1,20 @@
 # Issue #24 native close validation
 
-**Status:** Pending manual macOS and Linux QA; no native scenario has been executed for issue #24.
+**Status:** Manual native macOS/Linux QA pending; no native close scenario has been completed for issue #24.
 **Decision under test:** [FDR-006: Guarded Editor Quit](../fdr/FDR-006-guarded-editor-quit.md)
 
 ## Environment and result record
 
 | Platform | OS/build | Application build | Environment | Result |
 |---|---|---|---|---|
-| macOS | macOS 27.0, build 26A428 (host identified; QA not run) | Pending | Native application menu and window/event-loop behavior not exercised | **PENDING** |
-| Linux | Pending identification | Pending | Native window-manager behavior not exercised | **PENDING** |
+| macOS | macOS 27.0, build 26A428 (host identified; no native close scenario completed) | Rust source checkpoint `3d29d1f`; Rust 1.96.0; `aarch64-apple-darwin` | Automated UI scripting attempt was blocked because `osascript` reported System Events UI-element access was not enabled. Native menu/window event-loop scenarios were not exercised. | **MANUAL PENDING — operator assistance required for Accessibility/UI-element access** |
+| Linux | Pending identification | Pending | Native window-manager behavior has not been exercised. | **MANUAL PENDING** |
 
-Host identification is not a test result. No macOS or Linux issue24 native QA has been performed. For each actual run, record the OS version/build, application commit/build command, desktop/window manager where relevant, configured server port, exact scenario result, and any failure details here before changing its status.
+Host identification and headless Rust tests are not native test results. The macOS automation block is an access constraint, not a failing product test. An operator must enable/authorize the required Accessibility access or perform the scenarios manually. No Linux native result is available. For each actual run, record the OS version/build, application commit/build command, desktop/window manager where relevant, configured server port, exact scenario result, and failure details here before changing its status.
 
 ## macOS checklist
 
-Run on the native macOS application and record **PASS**, **FAIL**, or **BLOCKED** for each item with observed details. Leave unchecked/pending unless executed.
+Run on the native macOS application and record **PASS**, **FAIL**, or **BLOCKED** for each item with observed details. Keep pending unless executed.
 
 | Status | Scenario | Required observation |
 |---|---|---|
@@ -33,7 +33,7 @@ Run on the native macOS application and record **PASS**, **FAIL**, or **BLOCKED*
 
 ## Linux checklist
 
-Run on a native Linux desktop and record **PASS**, **FAIL**, or **BLOCKED** for each item with observed details. Leave unchecked/pending unless executed.
+Run on a native Linux desktop and record **PASS**, **FAIL**, or **BLOCKED** for each item with observed details. Keep pending unless executed.
 
 | Status | Scenario | Required observation |
 |---|---|---|
@@ -51,4 +51,4 @@ Run on a native Linux desktop and record **PASS**, **FAIL**, or **BLOCKED** for 
 
 ## Limits
 
-This is focused issue #24 native close/quit validation, not issue #27's OBS, platform, font, or resource certification. OS shutdown, macOS Force Quit, process termination, crashes, and power loss are outside the guarded-close contract. Headless tests and source-level checks cannot prove AppKit menu behavior or native Linux window-manager behavior.
+This is focused issue #24 native close/quit validation, not issue #27's OBS, platform, font, or resource certification. OS shutdown, macOS Force Quit, process termination, crashes, and power loss are outside the guarded-close contract. Automated headless tests and source-level checks do not prove AppKit menu behavior, native Linux window-manager behavior, or prompt usability in a native desktop.

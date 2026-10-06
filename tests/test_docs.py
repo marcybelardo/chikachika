@@ -850,7 +850,7 @@ class Milestone002DecisionContractTests(unittest.TestCase):
 
     def test_002_milestone_contract_links(self):
         milestone = (ROOT / "docs/TODO-0-0-2.md").read_text(encoding="utf-8")
-        self.assertIn("**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 implementation verification is in progress; #25–#27 remain incomplete", milestone)
+        self.assertIn("**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 automated Rust evidence passed at `3d29d1f`, while native verification remains pending; #25–#27 remain incomplete", milestone)
         for path in (
             "fdr/FDR-003-multi-widget-composition-workspace.md",
             "fdr/FDR-004-bundled-offline-text-fonts.md",
@@ -865,8 +865,8 @@ class Milestone002DecisionContractTests(unittest.TestCase):
             self.assertIn(f"| #{issue} |", milestone, issue)
         product_section = milestone[milestone.index("## Product Requirements"):milestone.index("## Confirmed Scope")]
         quality_section = milestone[milestone.index("## Quality Requirements"):milestone.index("## Explicitly Out of Scope")]
-        # Issue22 model/persistence/browser work and issue23 workspace
-        # implementation are delivered; issue24 runtime evidence and future
+        # Issue22/23 delivered work and automated issue24 implementation coverage
+        # are checked; native issue24 verification and future
         # font/Settings-window/OBS requirements remain incomplete.
         delivered = "\n".join(
             line for line in product_section.splitlines() + quality_section.splitlines()
@@ -876,9 +876,11 @@ class Milestone002DecisionContractTests(unittest.TestCase):
         self.assertIn("Save and restore", delivered)
         self.assertIn("A menu bar provides File, Edit, View, and Help actions", delivered)
         self.assertIn("The left sidebar lists widgets", delivered)
-        self.assertRegex(milestone, r"(?m)^- \[ \] Session-local undo/redo")
-        self.assertRegex(milestone, r"(?m)^- \[ \] Undo/redo restores valid widget selection")
-        self.assertRegex(milestone, r"(?m)^- \[ \] Closing the editor or quitting with unsaved document changes")
+        self.assertRegex(milestone, r"(?m)^- \[x\] Automated history tests cover widget and overlay commands")
+        self.assertRegex(milestone, r"(?m)^- \[x\] Automated tests verify restored state is published")
+        self.assertRegex(milestone, r"(?m)^- \[x\] Automated close-flow tests cover Save, Discard, Cancel")
+        self.assertRegex(milestone, r"(?m)^- \[x\] Automated GUI tests verify core shortcut focus routing")
+        self.assertIn("native macOS/Linux behavior remains pending", milestone)
         self.assertNotIn("bundled collection", delivered)
         self.assertNotIn("separate native window", delivered)
         self.assertNotIn("Exercise creation, composition, saving, restart, and OBS browser-source use", delivered)
@@ -975,7 +977,7 @@ class Issue22DocumentationCheckpointTests(unittest.TestCase):
             self.assertIn(anchor, normalized, anchor)
 
         # This checkpoint is not the complete 0.0.2 milestone.
-        self.assertIn("**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 implementation verification is in progress; #25–#27 remain incomplete", milestone)
+        self.assertIn("**Status:** In progress — issue22 and issue23 checkpoints delivered; issue24 automated Rust evidence passed at `3d29d1f`, while native verification remains pending; #25–#27 remain incomplete", milestone)
         for issue in range(23, 28):
             self.assertIn(f"#{issue}", milestone, issue)
         self.assertIn("#23", readme)
@@ -1055,8 +1057,11 @@ class Issue23DocumentationCheckpointTests(unittest.TestCase):
         self.assertIn("separate QA variant initialized at 1024×640", normalized)
         self.assertIn("server readiness was not checked in that variant", normalized)
         self.assertIn("issue22 and issue23 checkpoints delivered", milestone)
-        self.assertIn("issue24 implementation verification is in progress", milestone)
+        self.assertIn("issue24 automated Rust evidence passed at `3d29d1f`", milestone)
         self.assertIn("separate caption click updates its row and inspector", normalized)
+        self.assertIn("document history unless a text editor is focused", normalized)
+        self.assertIn("Dirty close offers Save, Discard, or Cancel", normalized)
+        self.assertIn("discard does not write document changes", normalized)
         self.assertNotIn("canvas text click did not visibly switch", normalized)
         self.assertNotIn("that direct-click behavior is under follow-up", normalized)
         self.assertNotIn("the #23 resizable three-panel layout and overlap behavior remain incomplete", normalized)
@@ -1080,53 +1085,85 @@ class Issue24DocumentationContractTests(unittest.TestCase):
         evidence = self._read("docs/measurements/issue24-runtime-evidence.md")
         native = self._read("docs/measurements/issue24-native-close-validation.md")
 
-        self.assertIn("issue24 implementation verification is in progress", milestone)
+        self.assertIn("automated Rust evidence passed at `3d29d1f`", milestone)
+        self.assertIn("native verification remains pending", milestone)
         for path in ("README.md", "docs/user/README.md", "docs/user/overlay-workflow.md"):
             text = re.sub(r"\s+", " ", self._read(path))
-            self.assertIn("implementation verification is in progress", text, path)
+            self.assertIn("automated Rust", text, path)
+            self.assertIn("native", text, path)
         self.assertIn("#25–#27 remain incomplete", milestone)
-        self.assertIn("no AC.2–AC.7 result is recorded as passed", evidence)
-        self.assertIn("do not exercise runtime features", evidence)
-        self.assertIn("Pending manual macOS and Linux QA", native)
+        self.assertIn("131 tests passed", evidence)
+        self.assertIn("not a claim about a post-documentation Rust run", evidence)
+        self.assertIn("do not establish native macOS menu/event-loop behavior", evidence)
+        self.assertIn("AUTOMATED PASS", evidence)
+        self.assertIn("Manual native macOS/Linux QA pending", native)
         self.assertIn("macOS 27.0, build 26A428", native)
-        self.assertIn("no native scenario has been executed", native)
+        self.assertIn("Rust 1.96.0", native)
+        self.assertIn("aarch64-apple-darwin", native)
+        self.assertIn("osascript", native)
+        self.assertIn("operator assistance", native)
+        self.assertIn("not a failing product test", native)
+        self.assertIn("Linux native result is available", native)
         self.assertIn("1024×640", native)
         self.assertIn("1280×800", native)
         self.assertIn("OS shutdown", native)
 
     def test_issue24_documentation_checkpoint_names_runtime_evidence(self):
         evidence = self._read("docs/measurements/issue24-runtime-evidence.md")
-        expected = (
-            "workspace_history_command_matrix",
-            "history_selection_restoration_matrix",
-            "history_capacity_and_redo_invalidation",
-            "grouped_inspector_text_edits",
-            "grouped_numeric_and_color_gestures",
-            "drag_commit_cancel_and_live_updates",
-            "pending_edit_command_boundaries",
-            "history_restoration_live_sse",
-            "undo_redo_overlay_delete_routes_and_streams",
-            "collection_restore_preflight_is_atomic",
-            "history_restore_failure_preserves_workspace",
-            "html_snapshot_revision_pair",
-            "restart_revision_initialization",
-            "save_edit_undo_clean",
-            "history_eviction_does_not_change_dirty_baseline",
-            "failed_save_preserves_history_and_pending_work",
-            "history_is_session_only",
-            "focus_safe_shortcut_matrix",
-            "focused_text_native_undo_and_newline",
-            "issue24_menu_actions_and_enabled_states",
-            "close_prompt_save_discard_cancel_matrix",
-            "close_save_failure_keeps_work_and_server",
-            "quit_while_text_focused_resolves_pending_edit",
-            "accepted_close_shuts_down_once",
-        )
-        for name in expected:
-            self.assertIn(f"`{name}`", evidence, name)
+        manifest = {
+            "src/app.rs": (
+                "workspace_history_command_matrix",
+                "history_selection_restoration_matrix",
+                "history_capacity_and_redo_invalidation",
+                "pending_undo_enforces_shared_history_capacity",
+                "pending_edit_command_boundaries",
+                "history_restore_failure_preserves_workspace",
+                "restart_revision_initialization",
+                "save_edit_undo_clean",
+                "history_eviction_does_not_change_dirty_baseline",
+                "failed_save_preserves_history_and_pending_work",
+                "history_is_session_only",
+            ),
+            "src/gui.rs": (
+                "grouped_inspector_text_edits",
+                "color_slider_drag_updates_live_and_undoes_as_one_edit",
+                "color_channel_numeric_edit_is_one_undoable_change",
+                "numeric_drag_commits_on_release_and_cancels_with_escape",
+                "color_popup_open_and_close_preserve_document_history",
+                "drag_commit_cancel_and_live_updates",
+                "focused_fields_suppress_document_shortcuts_and_global_save_remains_available",
+                "global_save_commits_and_persists_pending_inspector_edit_while_text_focused",
+                "focus_safe_shortcut_matrix_and_text_native_undo_and_newline",
+                "issue24_menu_actions_and_enabled_states",
+                "document_undo_cannot_restore_native_text_undo_from_previous_selection",
+                "close_prompt_save_discard_cancel_matrix",
+                "close_save_failure_keeps_work_and_server",
+                "pending_close_failure_cancels_native_close_and_preserves_live_work",
+                "close_save_writes_the_new_baseline_before_closing",
+                "close_discard_does_not_write_overlay_or_settings_files",
+                "clean_close_does_not_open_unsaved_prompt",
+                "quit_while_text_focused_resolves_pending_edit",
+                "file_quit_while_text_focused_resolves_pending_edit",
+                "command_q_while_text_focused_resolves_pending_edit",
+                "macos_event_loop_disables_default_menu",
+            ),
+            "src/server.rs": (
+                "collection_restore_preflight_is_atomic",
+                "html_snapshot_revision_pair",
+                "undo_redo_overlay_delete_routes_and_streams",
+            ),
+            "src/main.rs": ("normal_gui_return_shuts_down_once",),
+        }
+        for source, names in manifest.items():
+            source_text = self._read(source)
+            for name in names:
+                self.assertIn(f"`{name}`", evidence, name)
+                self.assertRegex(source_text, rf"(?m)^\s*(?:async\s+)?fn {name}\s*\(", f"{source}: {name}")
         for criterion in ("AC.2", "AC.3", "AC.4", "AC.5", "AC.6", "AC.7"):
             self.assertIn(criterion, evidence)
-        self.assertEqual(evidence.count("| Pending verification |"), 6)
+        self.assertEqual(evidence.count("**AUTOMATED PASS**"), 6)
+        self.assertIn("not an end-to-end native accepted-close test", evidence)
+        self.assertIn("issue24_documentation_checkpoint_names_runtime_evidence", evidence)
 
     def test_published_v001_prerelease_documentation(self):
         documents = "\n".join(

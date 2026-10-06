@@ -41,18 +41,21 @@ and Backward swap one adjacent layer without wrapping. Add, duplicate, and
 delete repair selection through the coordinator; switching overlays clears
 widget selection rather than targeting a stale widget.
 
-The accepted issue24 in-window menu contract (implementation verification is
-in progress) covers File > **Create Overlay**, **Save**, and guarded **Quit**; Edit >
-**Undo**, **Redo**, **Add Text**, **Duplicate**, **Delete**, **Forward**, and
-**Backward**; View > **Fit Canvas**, which recomputes the fit instead of adding
-a zoom mode; and Help > **User Documentation**. Undo/redo and other document
-commands follow the focus
-and pending-edit rules in [FDR-006](../fdr/FDR-006-guarded-editor-quit.md).
-The default macOS native application menu, including About, Hide, and Quit, is
-disabled; there is no placeholder Settings action while #25 remains deferred.
-Issue24 runtime implementation and native close verification are in progress;
-see the [runtime evidence checkpoint](../measurements/issue24-runtime-evidence.md)
-and [native close checklist](../measurements/issue24-native-close-validation.md).
+Issue #24 automated Rust checks for history, focus, save, and close flow passed
+at source checkpoint `3d29d1f`; native macOS/Linux verification remains pending.
+The in-window menu provides File > **Create Overlay**, **Save**, and guarded
+**Quit**; Edit > **Undo**, **Redo**, **Add Text**, **Duplicate**, **Delete**,
+**Forward**, and **Backward**; View > **Fit Canvas**, which recomputes the fit
+instead of adding a zoom mode; and Help > **User Documentation**. Undo/redo uses
+document history unless a text editor is focused, where text-native undo/redo
+applies; other focused fields suppress document shortcuts. Save commits pending
+edits. Dirty close offers Save, Discard, or Cancel, and discard does not write
+document changes. These are the accepted focus and pending-edit rules in
+[FDR-006](../fdr/FDR-006-guarded-editor-quit.md). The default macOS native
+application menu, including About, Hide, and Quit, is disabled; there is no
+placeholder Settings action while #25 remains deferred. See the [runtime
+evidence checkpoint](../measurements/issue24-runtime-evidence.md) and [native
+close checklist](../measurements/issue24-native-close-validation.md).
 
 Drag the selected widget on the center canvas. Its position stays within the
 model's canvas bounds, and dragging preserves the grab offset. The preview is a

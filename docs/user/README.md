@@ -32,15 +32,18 @@ right, see [Troubleshooting](troubleshooting.md).
    while editing; complete current snapshots reach it without manual refresh.
 
 The initial window size is 1280×800 logical pixels and the minimum is 1024×640.
-The left list and right inspector can be resized. The accepted issue24 in-window
-menu contract (implementation verification is in progress) covers File > Create
-Overlay, Save, and guarded Quit; Edit > Undo/Redo, Add Text, Duplicate, Delete,
-Forward, and Backward; View > Fit Canvas; and Help > User Documentation.
-Undo/redo and document commands follow FDR-006's focus and pending-edit rules. The default macOS native application menu,
+The left list and right inspector can be resized. Issue #24 automated Rust history, focus, save, and close-flow checks passed at
+source checkpoint `3d29d1f`; native macOS/Linux verification remains pending.
+The in-window menu provides File > Create Overlay, Save, and guarded Quit; Edit >
+Undo/Redo, Add Text, Duplicate, Delete, Forward, and Backward; View > Fit Canvas;
+and Help > User Documentation. Undo/redo uses document history except while a
+text editor is focused, where text-native undo/redo applies. Document shortcuts
+are suppressed in other focused fields. Save commits pending edits. A dirty
+close offers Save, Discard, or Cancel; discard leaves document files unchanged. The default macOS native application menu,
 including About, Hide, and Quit, is disabled; no placeholder Settings action is
-shown while #25 remains deferred. Issue24 implementation verification is in
-progress; named Rust tests and native close checks remain pending in the [runtime
-evidence checkpoint](../measurements/issue24-runtime-evidence.md). Local server
+shown while #25 remains deferred. Automated Rust test evidence is summarized in the [runtime evidence
+checkpoint](../measurements/issue24-runtime-evidence.md); native close, menu,
+and shortcut checks remain pending in the [native close checklist](../measurements/issue24-native-close-validation.md). Local server
 settings are collapsed in the status area by default.
 
 The browser and OBS output is authoritative. The native preview can differ in

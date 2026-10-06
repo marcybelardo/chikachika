@@ -101,6 +101,10 @@ metrics or line breaks. The persisted font IDs are `noto-sans` and
 `jetbrains-mono`, but no bundled font files are delivered yet; exact font
 assets, coverage, and fidelity remain #26 work.
 
+## Undo, shortcuts, and closing the editor
+
+Undo and Redo operate on document history when focus is outside text entry. In a focused text editor, the text editor handles native undo/redo instead. Other focused fields suppress document shortcuts; Save commits pending inspector edits. If the document has unsaved changes when closing, choose Save, Discard, or Cancel. Discard closes without saving document changes and does not save or modify the separate server-settings file. Automated Rust coverage is recorded in the [issue24 runtime evidence checkpoint](../measurements/issue24-runtime-evidence.md); native macOS/Linux verification remains pending in the [close checklist](../measurements/issue24-native-close-validation.md).
+
 ## Save failed or the previous file matters
 
 Save creates a complete snapshot in a temporary file in the destination
