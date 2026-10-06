@@ -25,7 +25,7 @@ use tokio::runtime::Builder;
 use tokio::sync::{oneshot, watch};
 
 use crate::browser::{self, BrowserRepresentation};
-use crate::model::{Overlay, OverlayId};
+use crate::model::{Overlay, OverlayId, validate_collection};
 
 pub const DEFAULT_BIND_ADDRESS: Ipv4Addr = Ipv4Addr::LOCALHOST;
 pub const DEFAULT_PORT: u16 = 51737;
@@ -138,6 +138,105 @@ impl OverlayHub {
             .get(&id)
             .map(|entry| entry.overlay.clone()))
     }
+    pub fn snapshot_with_revision(
+        &self,
+        id: OverlayId,
+    ) -> Result<Option<(Overlay, u64)>, HubError> {
+        Ok(self
+            .lock_entries()?
+            .get(&id)
+            .map(|entry| (entry.overlay.clone(), entry.revision)))
+    }
+    /// Replace the complete collection only when the hub still matches `expected`.
+    /// All validation, allocations, and revision checks happen before registry or
+    /// watch state is changed; the entries lock precedes the high-water lock.
+    pub fn replace_collection(
+        &self,
+        expected: &[Overlay],
+        target: &[Overlay],
+    ) -> Result<(), HubError> {
+        validate_collection(target).map_err(|_| HubError::InvalidCollection)?;
+        let mut expected_ids = std::collections::HashSet::new();
+        expected_ids
+            .try_reserve(expected.len())
+            .map_err(|_| HubError::AllocationFailed)?;
+        for overlay in expected {
+            if !expected_ids.insert(overlay.id()) {
+                return Err(HubError::InvalidCollection);
+            }
+        }
+
+        let mut entries = self.lock_entries()?;
+        if entries.len() != expected.len()
+            || expected.iter().any(|overlay| {
+                entries
+                    .get(&overlay.id())
+                    .is_none_or(|entry| entry.overlay != *overlay)
+            })
+        {
+            return Err(HubError::CollectionDivergence);
+        }
+        let mut high_water = self.lock_high_water()?;
+
+        let mut replacement = HashMap::new();
+        replacement
+            .try_reserve(target.len())
+            .map_err(|_| HubError::AllocationFailed)?;
+        let mut next_high_water = HashMap::new();
+        next_high_water
+            .try_reserve(high_water.len().saturating_add(target.len()))
+            .map_err(|_| HubError::AllocationFailed)?;
+        next_high_water.extend(high_water.iter().map(|(id, revision)| (*id, *revision)));
+        let mut publications = Vec::new();
+        publications
+            .try_reserve(target.len())
+            .map_err(|_| HubError::AllocationFailed)?;
+
+        for overlay in target {
+            let id = overlay.id();
+            let existing = entries.get(&id);
+            let changed = existing.is_none_or(|entry| entry.overlay != *overlay);
+            let revision = if !changed {
+                existing.expect("unchanged entries exist").revision
+            } else {
+                let prior = existing
+                    .map(|entry| entry.revision)
+                    .or_else(|| high_water.get(&id).copied());
+                match prior {
+                    Some(current) => {
+                        next_revision(current).ok_or(HubError::RevisionExhausted { id, current })?
+                    }
+                    None => 0,
+                }
+            };
+            let sender = match existing {
+                Some(entry) => {
+                    let sender = entry.sender.clone();
+                    if changed {
+                        publications.push((sender.clone(), browser::project(overlay, revision)));
+                    }
+                    sender
+                }
+                None => watch::channel(browser::project(overlay, revision)).0,
+            };
+            next_high_water.insert(id, revision.max(high_water.get(&id).copied().unwrap_or(0)));
+            replacement.insert(
+                id,
+                OverlayEntry {
+                    overlay: overlay.clone(),
+                    revision,
+                    sender,
+                },
+            );
+        }
+        // This is the commit point: all fallible checks and allocations are done.
+        for (sender, representation) in publications {
+            sender.send_replace(representation);
+        }
+        *entries = replacement;
+        *high_water = next_high_water;
+        Ok(())
+    }
     pub fn revision(&self, id: OverlayId) -> Result<Option<u64>, HubError> {
         Ok(self.lock_entries()?.get(&id).map(|entry| entry.revision))
     }
@@ -184,6 +283,9 @@ pub enum HubError {
     Duplicate { id: OverlayId },
     Unknown { id: OverlayId },
     LockPoisoned,
+    InvalidCollection,
+    CollectionDivergence,
+    AllocationFailed,
     RevisionExhausted { id: OverlayId, current: u64 },
 }
 impl fmt::Display for HubError {
@@ -192,6 +294,11 @@ impl fmt::Display for HubError {
             Self::Duplicate { id } => write!(f, "overlay {id} is already registered"),
             Self::Unknown { id } => write!(f, "overlay {id} is not registered"),
             Self::LockPoisoned => write!(f, "overlay hub lock is poisoned"),
+            Self::InvalidCollection => write!(f, "replacement overlay collection is invalid"),
+            Self::CollectionDivergence => {
+                write!(f, "hub no longer matches the expected collection")
+            }
+            Self::AllocationFailed => write!(f, "could not stage overlay collection replacement"),
             Self::RevisionExhausted { id, current } => {
                 write!(f, "overlay {id} delivery revision exhausted at {current}")
             }
@@ -336,10 +443,9 @@ async fn render_overlay(State(state): State<ServerState>, Path(id): Path<String>
     let Some(id) = parse_id(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(Some(overlay)) = state.hub.snapshot(id) else {
+    let Ok(Some((overlay, revision))) = state.hub.snapshot_with_revision(id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let revision = state.hub.revision(id).ok().flatten().unwrap_or(0);
     let body = browser::render(&overlay, revision);
     (
         StatusCode::OK,
@@ -695,6 +801,123 @@ mod tests {
             8
         );
     }
+    #[test]
+    fn collection_restore_preflight_is_atomic() {
+        let hub = OverlayHub::new();
+        let first = overlay();
+        let second = Overlay::with_dimensions("Second", 640, 480).unwrap();
+        let first_id = first.id();
+        let second_id = second.id();
+        hub.register(first.clone()).unwrap();
+        hub.register(second.clone()).unwrap();
+        let mut first_receiver = hub.subscribe(first_id).unwrap();
+        let mut second_receiver = hub.subscribe(second_id).unwrap();
+        first_receiver.borrow_and_update();
+        second_receiver.borrow_and_update();
+        let changed_first = changed(&first, "Changed");
+        let changed_second = changed(&second, "Changed second");
+        hub.set_high_water_for_test(second_id, MAX_SAFE_REVISION);
+        assert!(matches!(
+            hub.replace_collection(&[first.clone(), second.clone()], &[changed_first, changed_second]),
+            Err(HubError::RevisionExhausted { id, .. }) if id == second_id
+        ));
+        assert_eq!(hub.snapshot(first_id).unwrap(), Some(first.clone()));
+        assert_eq!(hub.snapshot(second_id).unwrap(), Some(second));
+        assert!(!first_receiver.has_changed().unwrap());
+        assert!(!second_receiver.has_changed().unwrap());
+        assert_eq!(hub.revision(first_id).unwrap(), Some(0));
+        assert_eq!(hub.revision(second_id).unwrap(), Some(MAX_SAFE_REVISION));
+    }
+
+    #[tokio::test]
+    async fn history_restoration_live_sse() {
+        let hub = OverlayHub::new();
+        let first = overlay();
+        let id = first.id();
+        hub.register(first.clone()).unwrap();
+        let mut receiver = hub.subscribe(id).unwrap();
+        receiver.borrow_and_update();
+        let changed_overlay = changed(&first, "Changed");
+        hub.replace_collection(
+            std::slice::from_ref(&first),
+            std::slice::from_ref(&changed_overlay),
+        )
+        .unwrap();
+        assert!(receiver.has_changed().unwrap());
+        let latest = receiver.borrow_and_update().clone();
+        assert_eq!(latest.revision(), 1);
+        assert_eq!(latest, browser::project(&changed_overlay, 1));
+        hub.replace_collection(
+            std::slice::from_ref(&changed_overlay),
+            std::slice::from_ref(&first),
+        )
+        .unwrap();
+        assert_eq!(receiver.borrow_and_update().revision(), 2);
+        assert_eq!(hub.snapshot_with_revision(id).unwrap(), Some((first, 2)));
+    }
+
+    #[tokio::test]
+    async fn html_snapshot_revision_pair() {
+        let hub = OverlayHub::new();
+        let initial = overlay();
+        let id = initial.id();
+        hub.register(initial.clone()).unwrap();
+        let response = response_for(router_with_hub(hub.clone()), &format!("/overlay/{id}")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(html, browser::render(&initial, 0));
+        let updated = changed(&initial, "updated");
+        hub.replace_collection(
+            std::slice::from_ref(&initial),
+            std::slice::from_ref(&updated),
+        )
+        .unwrap();
+        let response = response_for(router_with_hub(hub), &format!("/overlay/{id}")).await;
+        let html = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(html, browser::render(&updated, 1));
+    }
+
+    #[tokio::test]
+    async fn undo_redo_overlay_delete_routes_and_streams() {
+        let hub = OverlayHub::new();
+        let original = overlay();
+        let id = original.id();
+        hub.register(original.clone()).unwrap();
+        let route = router_with_hub(hub.clone());
+        let response = response_for(route.clone(), &format!("/overlay/{id}/events")).await;
+        let mut old_stream = response.into_body();
+        assert_eq!(
+            event_snapshot(&next_frame(&mut old_stream).await.unwrap())["revision"],
+            0
+        );
+        hub.replace_collection(std::slice::from_ref(&original), &[])
+            .unwrap();
+        assert_eq!(
+            response_for(route.clone(), &format!("/overlay/{id}"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), old_stream.frame())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        hub.replace_collection(&[], std::slice::from_ref(&original))
+            .unwrap();
+        let restored = response_for(route.clone(), &format!("/overlay/{id}")).await;
+        assert_eq!(restored.status(), StatusCode::OK);
+        let html = restored.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(html, browser::render(&original, 1));
+        let fresh = response_for(route, &format!("/overlay/{id}/events")).await;
+        let mut fresh_stream = fresh.into_body();
+        assert_eq!(
+            event_snapshot(&next_frame(&mut fresh_stream).await.unwrap())["revision"],
+            1
+        );
+    }
+
     #[tokio::test]
     async fn overlay_route_renders_current_explicit_revision() {
         let hub = OverlayHub::new();

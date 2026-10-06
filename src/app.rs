@@ -15,6 +15,49 @@ use crate::persistence::SaveFailureStage;
 use crate::persistence::{PersistenceError, Store};
 use crate::server::{HubError, OverlayHub, PublishResult, ServerError};
 
+const HISTORY_CAPACITY: usize = 100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectionMetadata {
+    pub overlay_id: Option<OverlayId>,
+    pub overlay_index: Option<usize>,
+    pub widget_id: Option<TextWidgetId>,
+    pub widget_index: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EditTarget {
+    pub overlay_id: OverlayId,
+    pub widget_id: TextWidgetId,
+    pub field: String,
+}
+
+#[derive(Clone)]
+struct SelectionSnapshot {
+    overlay: Option<OverlayId>,
+    overlay_index: Option<usize>,
+    widget: Option<TextWidgetId>,
+    widget_index: Option<usize>,
+}
+
+#[derive(Clone)]
+struct WorkspaceSnapshot {
+    overlays: Vec<Overlay>,
+    selection: SelectionSnapshot,
+}
+
+#[derive(Clone)]
+struct HistoryEntry {
+    before: WorkspaceSnapshot,
+    after: WorkspaceSnapshot,
+}
+
+#[derive(Clone)]
+struct PendingEdit {
+    target: EditTarget,
+    before: WorkspaceSnapshot,
+}
+
 pub use crate::settings::SettingsState;
 
 /// The narrow hosting boundary consumed by the coordinator and test doubles.
@@ -29,6 +72,7 @@ pub trait HubOperations: Clone {
     fn publish_overlay(&self, overlay: &Overlay) -> Result<PublishResult, HubError>;
     fn remove_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError>;
     fn snapshot_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError>;
+    fn replace_collection(&self, expected: &[Overlay], target: &[Overlay]) -> Result<(), HubError>;
 }
 
 impl HubOperations for OverlayHub {
@@ -43,6 +87,9 @@ impl HubOperations for OverlayHub {
     }
     fn snapshot_overlay(&self, id: OverlayId) -> Result<Option<Overlay>, HubError> {
         self.snapshot(id)
+    }
+    fn replace_collection(&self, expected: &[Overlay], target: &[Overlay]) -> Result<(), HubError> {
+        self.replace_collection(expected, target)
     }
 }
 
@@ -68,6 +115,7 @@ pub enum CoordinatorError {
     HubWorkspaceDivergence {
         id: OverlayId,
     },
+    EditTransactionMismatch,
 }
 
 pub type AppError = CoordinatorError;
@@ -95,6 +143,9 @@ impl fmt::Display for CoordinatorError {
                 f,
                 "overlay {id} exists in the workspace but not in the hosting hub"
             ),
+            Self::EditTransactionMismatch => {
+                write!(f, "the edit transaction target does not match")
+            }
         }
     }
 }
@@ -223,6 +274,9 @@ pub struct HeadlessCoordinator<H: HubOperations = OverlayHub> {
     server_address: Option<SocketAddr>,
     operation_error: Option<String>,
     server_error: Option<String>,
+    undo: Vec<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
+    pending: Option<PendingEdit>,
 }
 pub type AppCoordinator = HeadlessCoordinator<OverlayHub>;
 
@@ -263,6 +317,9 @@ impl HeadlessCoordinator<OverlayHub> {
             server_address: None,
             operation_error: None,
             server_error: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            pending: None,
         }
     }
     pub fn from_overlays(store: Store, overlays: Vec<Overlay>) -> Result<Self, CoordinatorError> {
@@ -307,6 +364,9 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
             server_address: None,
             operation_error: None,
             server_error: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            pending: None,
         })
     }
 
@@ -318,6 +378,191 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
     }
     pub fn overlays(&self) -> &[Overlay] {
         &self.overlays
+    }
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.before.overlays != self.overlays)
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+    pub fn pending_edit_target(&self) -> Option<&EditTarget> {
+        self.pending.as_ref().map(|pending| &pending.target)
+    }
+    pub fn selection_metadata(&self) -> SelectionMetadata {
+        let overlay_index = self
+            .selected
+            .and_then(|id| self.overlays.iter().position(|overlay| overlay.id() == id));
+        let widget_index = self.selected_widget.and_then(|id| {
+            self.selected_overlay()
+                .and_then(|overlay| overlay.widget_index(id))
+        });
+        SelectionMetadata {
+            overlay_id: self.selected,
+            overlay_index,
+            widget_id: self.selected_widget,
+            widget_index,
+        }
+    }
+    fn workspace_snapshot(&self) -> WorkspaceSnapshot {
+        let overlay_index = self
+            .selected
+            .and_then(|id| self.overlays.iter().position(|o| o.id() == id));
+        let widget_index = self.selected_widget.and_then(|id| {
+            self.selected_overlay()
+                .and_then(|overlay| overlay.widget_index(id))
+        });
+        WorkspaceSnapshot {
+            overlays: self.overlays.clone(),
+            selection: SelectionSnapshot {
+                overlay: self.selected,
+                overlay_index,
+                widget: self.selected_widget,
+                widget_index,
+            },
+        }
+    }
+    fn record_action(&mut self, before: WorkspaceSnapshot) {
+        let after = self.workspace_snapshot();
+        if before.overlays == after.overlays {
+            return;
+        }
+        self.redo.clear();
+        self.undo.push(HistoryEntry { before, after });
+        if self.undo.len() + self.redo.len() > HISTORY_CAPACITY {
+            self.undo.remove(0);
+        }
+    }
+    fn commit_pending(&mut self) -> Result<(), CoordinatorError> {
+        if let Some(pending) = self.pending.as_ref() {
+            let changed = pending.before.overlays != self.overlays;
+            let before = pending.before.clone();
+            if changed && self.undo.try_reserve(1).is_err() {
+                return Err(self.reject(HubError::AllocationFailed.into()));
+            }
+            self.pending = None;
+            if changed {
+                self.record_action(before);
+            }
+        }
+        Ok(())
+    }
+    fn resolve_pending(&mut self) -> Result<(), CoordinatorError> {
+        self.commit_pending()
+    }
+    fn restore_snapshot(&mut self, snapshot: &WorkspaceSnapshot) -> Result<(), CoordinatorError> {
+        validate_collection(&snapshot.overlays)?;
+        let restored = snapshot.overlays.clone();
+        let selected = resolve_overlay_selection(
+            &restored,
+            snapshot.selection.overlay,
+            snapshot.selection.overlay_index,
+        );
+        let selected_widget = resolve_widget_selection(
+            &restored,
+            selected,
+            snapshot.selection.widget,
+            snapshot.selection.widget_index,
+            snapshot.selection.overlay,
+        );
+        self.hub.replace_collection(&self.overlays, &restored)?;
+        self.overlays = restored;
+        self.selected = selected;
+        self.selected_widget = selected_widget;
+        Ok(())
+    }
+    pub fn begin_edit(&mut self, target: EditTarget) -> Result<(), CoordinatorError> {
+        if let Some(pending) = &self.pending {
+            if pending.target == target {
+                return Ok(());
+            }
+            self.commit_pending()?;
+        }
+        let Some(overlay) = self.overlay(target.overlay_id) else {
+            return Err(self.reject(CoordinatorError::UnknownOverlay {
+                id: target.overlay_id,
+            }));
+        };
+        if overlay.widget(target.widget_id).is_none() {
+            return Err(self.reject(CoordinatorError::UnknownWidget {
+                id: target.widget_id,
+            }));
+        }
+        self.pending = Some(PendingEdit {
+            target,
+            before: self.workspace_snapshot(),
+        });
+        self.operation_error = None;
+        Ok(())
+    }
+    pub fn update_edit<F>(&mut self, target: &EditTarget, mutate: F) -> Result<(), CoordinatorError>
+    where
+        F: FnOnce(&mut Overlay) -> Result<(), ModelError>,
+    {
+        if self.pending.as_ref().map(|pending| &pending.target) != Some(target) {
+            return Err(self.reject(CoordinatorError::EditTransactionMismatch));
+        }
+        self.apply_overlay_update(target.overlay_id, mutate)
+    }
+    pub fn commit_edit(&mut self, target: &EditTarget) -> Result<(), CoordinatorError> {
+        if self.pending.as_ref().map(|pending| &pending.target) != Some(target) {
+            return Err(self.reject(CoordinatorError::EditTransactionMismatch));
+        }
+        self.commit_pending()?;
+        self.operation_error = None;
+        Ok(())
+    }
+    pub fn cancel_edit(&mut self, target: &EditTarget) -> Result<(), CoordinatorError> {
+        if self.pending.as_ref().map(|pending| &pending.target) != Some(target) {
+            return Err(self.reject(CoordinatorError::EditTransactionMismatch));
+        }
+        let snapshot = self
+            .pending
+            .as_ref()
+            .expect("checked pending edit")
+            .before
+            .clone();
+        if let Err(error) = self.restore_snapshot(&snapshot) {
+            return Err(self.reject(error));
+        }
+        self.pending = None;
+        self.operation_error = None;
+        Ok(())
+    }
+    pub fn undo(&mut self) -> Result<bool, CoordinatorError> {
+        self.resolve_pending()?;
+        let Some(entry) = self.undo.last().cloned() else {
+            return Ok(false);
+        };
+        self.redo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
+        if let Err(error) = self.restore_snapshot(&entry.before) {
+            return Err(self.reject(error));
+        }
+        self.undo.pop();
+        self.redo.push(entry);
+        self.operation_error = None;
+        Ok(true)
+    }
+    pub fn redo(&mut self) -> Result<bool, CoordinatorError> {
+        self.resolve_pending()?;
+        let Some(entry) = self.redo.last().cloned() else {
+            return Ok(false);
+        };
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
+        if let Err(error) = self.restore_snapshot(&entry.after) {
+            return Err(self.reject(error));
+        }
+        self.redo.pop();
+        self.undo.push(entry);
+        self.operation_error = None;
+        Ok(true)
     }
     pub fn overlay(&self, id: OverlayId) -> Option<&Overlay> {
         self.overlays.iter().find(|overlay| overlay.id() == id)
@@ -389,6 +634,7 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
             return Err(self.reject(CoordinatorError::UnknownOverlay { id }));
         }
         if self.selected != Some(id) {
+            self.resolve_pending()?;
             self.selected_widget = None;
         }
         self.selected = Some(id);
@@ -399,7 +645,9 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         self.select_overlay(id)
     }
     pub fn clear_widget_selection(&mut self) {
-        self.selected_widget = None;
+        if self.selected_widget.is_some() && self.resolve_pending().is_ok() {
+            self.selected_widget = None;
+        }
     }
     pub fn select_widget(&mut self, id: TextWidgetId) -> Result<(), CoordinatorError> {
         let Some(overlay) = self.selected_overlay() else {
@@ -407,6 +655,9 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         };
         if overlay.widget(id).is_none() {
             return Err(self.reject(CoordinatorError::UnknownWidget { id }));
+        }
+        if self.selected_widget != Some(id) {
+            self.resolve_pending()?;
         }
         self.selected_widget = Some(id);
         self.operation_error = None;
@@ -427,6 +678,11 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         name: impl Into<String>,
         canvas: CanvasSize,
     ) -> Result<OverlayId, CoordinatorError> {
+        self.resolve_pending()?;
+        let before = self.workspace_snapshot();
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
         let overlay = Overlay::new(name, canvas).map_err(|error| self.reject(error.into()))?;
         let id = overlay.id();
         if let Err(error) = self.hub.register_overlay(overlay.clone()) {
@@ -436,6 +692,7 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         self.selected = Some(id);
         self.selected_widget = None;
         self.operation_error = None;
+        self.record_action(before);
         Ok(id)
     }
 
@@ -452,8 +709,22 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
             .and_then(|id| self.rename_overlay(id, name))
     }
 
-    /// Applies a model candidate and publishes it before changing workspace or selection.
+    /// Applies and publishes an edit, recording one discrete action unless a transaction is active.
     pub fn update_overlay<F>(&mut self, id: OverlayId, mutate: F) -> Result<(), CoordinatorError>
+    where
+        F: FnOnce(&mut Overlay) -> Result<(), ModelError>,
+    {
+        self.resolve_pending()?;
+        let before = self.workspace_snapshot();
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
+        self.apply_overlay_update(id, mutate)?;
+        self.record_action(before);
+        Ok(())
+    }
+
+    fn apply_overlay_update<F>(&mut self, id: OverlayId, mutate: F) -> Result<(), CoordinatorError>
     where
         F: FnOnce(&mut Overlay) -> Result<(), ModelError>,
     {
@@ -515,13 +786,19 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         overlay_id: OverlayId,
         widget: impl Into<TextWidget>,
     ) -> Result<TextWidgetId, CoordinatorError> {
+        self.resolve_pending()?;
+        let before = self.workspace_snapshot();
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
         let widget = widget.into();
         let id = widget.id();
-        self.update_overlay(overlay_id, move |overlay| {
+        self.apply_overlay_update(overlay_id, move |overlay| {
             overlay.add_widget(widget).map(|_| ())
         })?;
         self.selected = Some(overlay_id);
         self.selected_widget = Some(id);
+        self.record_action(before);
         Ok(id)
     }
     pub fn add_selected_widget(
@@ -538,14 +815,20 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         overlay_id: OverlayId,
         widget_id: TextWidgetId,
     ) -> Result<TextWidgetId, CoordinatorError> {
+        self.resolve_pending()?;
+        let before = self.workspace_snapshot();
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
         let mut inserted = None;
-        self.update_overlay(overlay_id, |overlay| {
+        self.apply_overlay_update(overlay_id, |overlay| {
             inserted = Some(overlay.duplicate_widget(widget_id)?);
             Ok(())
         })?;
         let id = inserted.expect("duplicate operation sets ID");
         self.selected = Some(overlay_id);
         self.selected_widget = Some(id);
+        self.record_action(before);
         Ok(id)
     }
     pub fn delete_widget(
@@ -589,6 +872,11 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         if !confirmed {
             return Err(self.reject(CoordinatorError::ConfirmationRequired));
         }
+        self.resolve_pending()?;
+        let before = self.workspace_snapshot();
+        self.undo
+            .try_reserve(1)
+            .map_err(|_| self.reject(HubError::AllocationFailed.into()))?;
         let index = self
             .overlays
             .iter()
@@ -609,6 +897,7 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
             self.selected_widget = None;
         }
         self.operation_error = None;
+        self.record_action(before);
         Ok(())
     }
     pub fn delete_selected(&mut self, confirmed: bool) -> Result<(), CoordinatorError> {
@@ -618,10 +907,18 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
     }
 
     pub fn save(&mut self) -> Result<(), CoordinatorError> {
+        self.resolve_pending()?;
         let snapshot = self.overlays.clone();
-        self.store
-            .save(&snapshot)
-            .map_err(|error| self.reject(error.into()))?;
+        let result = self.store.save(&snapshot);
+        self.finish_save(snapshot, result)
+    }
+
+    fn finish_save(
+        &mut self,
+        snapshot: Vec<Overlay>,
+        result: Result<(), PersistenceError>,
+    ) -> Result<(), CoordinatorError> {
+        result.map_err(|error| self.reject(error.into()))?;
         self.saved_content = snapshot;
         self.operation_error = None;
         Ok(())
@@ -629,13 +926,10 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
 
     #[cfg(test)]
     fn save_with_failure(&mut self, stage: SaveFailureStage) -> Result<(), CoordinatorError> {
+        self.resolve_pending()?;
         let snapshot = self.overlays.clone();
-        self.store
-            .save_with_failure(&snapshot, stage)
-            .map_err(|error| self.reject(error.into()))?;
-        self.saved_content = snapshot;
-        self.operation_error = None;
-        Ok(())
+        let result = self.store.save_with_failure(&snapshot, stage);
+        self.finish_save(snapshot, result)
     }
 
     pub fn save_if_dirty(&mut self) -> Result<bool, CoordinatorError> {
@@ -649,6 +943,54 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         self.operation_error = Some(error.to_string());
         error
     }
+}
+
+fn resolve_overlay_selection(
+    overlays: &[Overlay],
+    selected: Option<OverlayId>,
+    old_index: Option<usize>,
+) -> Option<OverlayId> {
+    let Some(selected) = selected else {
+        return None;
+    };
+    if overlays.iter().any(|overlay| overlay.id() == selected) {
+        return Some(selected);
+    }
+    old_index
+        .and_then(|index| overlays.get(index).or_else(|| overlays.last()))
+        .map(Overlay::id)
+}
+
+fn resolve_widget_selection(
+    overlays: &[Overlay],
+    selected_overlay: Option<OverlayId>,
+    selected_widget: Option<TextWidgetId>,
+    old_index: Option<usize>,
+    recorded_overlay: Option<OverlayId>,
+) -> Option<TextWidgetId> {
+    let Some(selected_overlay) = selected_overlay else {
+        return None;
+    };
+    if recorded_overlay != Some(selected_overlay) {
+        return None;
+    }
+    let overlay = overlays
+        .iter()
+        .find(|overlay| overlay.id() == selected_overlay)?;
+    let Some(widget) = selected_widget else {
+        return None;
+    };
+    if overlay.widget(widget).is_some() {
+        return Some(widget);
+    }
+    old_index
+        .and_then(|index| {
+            overlay
+                .widgets()
+                .get(index)
+                .or_else(|| overlay.widgets().last())
+        })
+        .map(TextWidget::id)
 }
 
 fn repair_widget_selection(
@@ -979,6 +1321,7 @@ mod tests {
         snapshot_calls: usize,
         fail_snapshot_after_first: bool,
         publish_error: Option<HubError>,
+        restore_error: Option<HubError>,
     }
 
     impl ScriptedHub {
@@ -989,12 +1332,17 @@ mod tests {
                     snapshot_calls: 0,
                     fail_snapshot_after_first,
                     publish_error: None,
+                    restore_error: None,
                 })),
             }
         }
 
         fn set_publish_error(&self, error: HubError) {
             self.state.lock().unwrap().publish_error = Some(error);
+        }
+
+        fn set_restore_error(&self, error: HubError) {
+            self.state.lock().unwrap().restore_error = Some(error);
         }
 
         fn current(&self, id: OverlayId) -> Option<Overlay> {
@@ -1043,6 +1391,31 @@ mod tests {
                 return Err(HubError::LockPoisoned);
             }
             Ok(state.overlays.get(&id).cloned())
+        }
+
+        fn replace_collection(
+            &self,
+            expected: &[Overlay],
+            target: &[Overlay],
+        ) -> Result<(), HubError> {
+            let mut state = self.state.lock().unwrap();
+            if let Some(error) = state.restore_error.take() {
+                return Err(error);
+            }
+            if state.overlays.len() != expected.len()
+                || expected
+                    .iter()
+                    .any(|overlay| state.overlays.get(&overlay.id()) != Some(overlay))
+            {
+                return Err(HubError::CollectionDivergence);
+            }
+            validate_collection(target).map_err(|_| HubError::InvalidCollection)?;
+            state.overlays = target
+                .iter()
+                .cloned()
+                .map(|overlay| (overlay.id(), overlay))
+                .collect();
+            Ok(())
         }
     }
 
@@ -1094,6 +1467,325 @@ mod tests {
         assert_eq!(hub.snapshot_calls(), 1);
         assert!(app.last_error().is_some());
         assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn workspace_history_command_matrix() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = coordinator(&d.path().join("overlays.json"));
+        let id = app.create_overlay("History", 100, 100).unwrap();
+        let first = app.add_widget(id, "one").unwrap();
+        let duplicate = app.duplicate_widget(id, first).unwrap();
+        assert_eq!(app.selected_widget_id(), Some(duplicate));
+        assert!(app.undo().unwrap());
+        assert!(app.overlay(id).unwrap().widget(duplicate).is_none());
+        assert_eq!(app.selected_widget_id(), Some(first));
+        assert!(app.redo().unwrap());
+        assert_eq!(app.selected_widget_id(), Some(duplicate));
+        app.rename_overlay(id, "Renamed").unwrap();
+        assert!(app.undo().unwrap());
+        assert_eq!(app.overlay(id).unwrap().name(), "History");
+        assert!(app.redo().unwrap());
+        assert_eq!(app.overlay(id).unwrap().name(), "Renamed");
+    }
+
+    #[test]
+    fn history_selection_restoration_matrix() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = coordinator(&d.path().join("overlays.json"));
+        let first_overlay = app.create_overlay("First", 100, 100).unwrap();
+        let first_widget = app.add_widget(first_overlay, "first").unwrap();
+        let second_overlay = app.create_overlay("Second", 100, 100).unwrap();
+        let second_widget = app.add_widget(second_overlay, "second").unwrap();
+        app.select_overlay(first_overlay).unwrap();
+        app.select_widget(first_widget).unwrap();
+        app.rename_overlay(second_overlay, "Second changed")
+            .unwrap();
+        assert!(app.undo().unwrap());
+        assert_eq!(app.selection_metadata().overlay_id, Some(first_overlay));
+        assert_eq!(app.selection_metadata().widget_id, Some(first_widget));
+        assert_eq!(app.redo().unwrap(), true);
+        assert_eq!(app.selected_widget_id(), Some(first_widget));
+        app.delete_overlay(first_overlay, true).unwrap();
+        assert!(app.undo().unwrap());
+        assert_eq!(app.selected_overlay_id(), Some(first_overlay));
+        assert_eq!(app.selected_widget_id(), Some(first_widget));
+        assert!(
+            app.overlay(second_overlay)
+                .unwrap()
+                .widget(second_widget)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn history_capacity_and_redo_invalidation() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = coordinator(&d.path().join("overlays.json"));
+        let id = app.create_overlay("zero", 100, 100).unwrap();
+        for index in 0..101 {
+            app.rename_overlay(id, format!("name-{index}")).unwrap();
+        }
+        for _ in 0..100 {
+            assert!(app.undo().unwrap());
+        }
+        assert!(!app.can_undo());
+        assert_eq!(app.overlay(id).unwrap().name(), "name-0");
+        assert!(app.can_redo());
+        app.rename_overlay(id, "new branch").unwrap();
+        assert!(!app.can_redo());
+    }
+
+    #[test]
+    fn pending_edit_command_boundaries() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = coordinator(&d.path().join("overlays.json"));
+        let overlay_id = app.create_overlay("Pending", 100, 100).unwrap();
+        let widget_id = app.add_widget(overlay_id, "start").unwrap();
+        let target = EditTarget {
+            overlay_id,
+            widget_id,
+            field: "content".into(),
+        };
+        app.begin_edit(target.clone()).unwrap();
+        for value in ["live one", "live two"] {
+            app.update_edit(&target, |overlay| {
+                overlay.set_widget_content(widget_id, value)
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "live two"
+        );
+        assert_eq!(app.pending_edit_target(), Some(&target));
+        app.commit_edit(&target).unwrap();
+        assert!(app.undo().unwrap());
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "start"
+        );
+        app.redo().unwrap();
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "live two"
+        );
+        app.begin_edit(target.clone()).unwrap();
+        app.update_edit(&target, |overlay| {
+            overlay.set_widget_content(widget_id, "cancelled")
+        })
+        .unwrap();
+        app.cancel_edit(&target).unwrap();
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "live two"
+        );
+        assert!(app.pending_edit_target().is_none());
+    }
+
+    #[test]
+    fn history_restore_failure_preserves_workspace() {
+        let d = tempfile::tempdir().unwrap();
+        let initial = Overlay::with_dimensions("Initial", 100, 100).unwrap();
+        let id = initial.id();
+        let hub = ScriptedHub::new(false);
+        let mut app = HeadlessCoordinator::from_overlays_with_hub(
+            Store::at(d.path().join("overlays.json")),
+            vec![initial.clone()],
+            hub.clone(),
+        )
+        .unwrap();
+        app.rename_overlay(id, "Changed").unwrap();
+        let before = app.overlays().to_vec();
+        hub.set_restore_error(HubError::CollectionDivergence);
+        assert!(app.undo().is_err());
+        assert_eq!(app.overlays(), before);
+        assert_eq!(hub.current(id).unwrap().name(), "Changed");
+        assert!(app.can_undo());
+        assert!(!app.can_redo());
+        assert!(app.undo().unwrap());
+        assert_eq!(app.last_error(), None);
+    }
+
+    #[test]
+    fn pending_noop_does_not_enable_undo() {
+        let d = tempfile::tempdir().unwrap();
+        let mut overlay = Overlay::with_dimensions("Loaded", 100, 100).unwrap();
+        let widget_id = overlay.add_widget("start").unwrap();
+        let overlay_id = overlay.id();
+        let mut app = HeadlessCoordinator::from_overlays(
+            Store::at(d.path().join("overlays.json")),
+            vec![overlay],
+        )
+        .unwrap();
+        let target = EditTarget {
+            overlay_id,
+            widget_id,
+            field: "content".into(),
+        };
+        app.begin_edit(target.clone()).unwrap();
+        assert!(!app.can_undo());
+        app.update_edit(&target, |overlay| {
+            overlay.set_widget_content(widget_id, "temporary")
+        })
+        .unwrap();
+        assert!(app.can_undo());
+        app.update_edit(&target, |overlay| {
+            overlay.set_widget_content(widget_id, "start")
+        })
+        .unwrap();
+        assert!(!app.can_undo());
+        app.commit_edit(&target).unwrap();
+        assert!(!app.can_undo());
+    }
+
+    #[test]
+    fn failed_cancel_preserves_live_pending_edit() {
+        let d = tempfile::tempdir().unwrap();
+        let mut overlay = Overlay::with_dimensions("Loaded", 100, 100).unwrap();
+        let widget_id = overlay.add_widget("start").unwrap();
+        let overlay_id = overlay.id();
+        let hub = ScriptedHub::new(false);
+        let mut app = HeadlessCoordinator::from_overlays_with_hub(
+            Store::at(d.path().join("overlays.json")),
+            vec![overlay],
+            hub.clone(),
+        )
+        .unwrap();
+        let target = EditTarget {
+            overlay_id,
+            widget_id,
+            field: "content".into(),
+        };
+        app.begin_edit(target.clone()).unwrap();
+        app.update_edit(&target, |overlay| {
+            overlay.set_widget_content(widget_id, "live")
+        })
+        .unwrap();
+        hub.set_restore_error(HubError::CollectionDivergence);
+        assert!(app.cancel_edit(&target).is_err());
+        assert_eq!(app.pending_edit_target(), Some(&target));
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "live"
+        );
+        assert_eq!(
+            hub.current(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "live"
+        );
+    }
+
+    #[test]
+    fn history_eviction_does_not_change_dirty_baseline() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = coordinator(&d.path().join("overlays.json"));
+        let id = app.create_overlay("Saved", 100, 100).unwrap();
+        app.save().unwrap();
+        for index in 0..101 {
+            app.rename_overlay(id, format!("name-{index}")).unwrap();
+        }
+        assert!(app.is_dirty());
+        app.rename_overlay(id, "Saved").unwrap();
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn save_edit_undo_clean_and_history_is_session_only() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("overlays.json");
+        let mut app = coordinator(&path);
+        let id = app.create_overlay("Saved", 100, 100).unwrap();
+        let widget = app.add_widget(id, "before").unwrap();
+        app.save().unwrap();
+        app.update_overlay(id, |overlay| overlay.set_widget_content(widget, "after"))
+            .unwrap();
+        assert!(app.undo().unwrap());
+        assert!(!app.is_dirty());
+        let restarted = coordinator(&path);
+        assert!(!restarted.can_undo());
+        assert!(!restarted.can_redo());
+    }
+
+    #[test]
+    fn failed_save_preserves_history_and_pending_work() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("overlays.json");
+        let mut app = coordinator(&path);
+        let id = app.create_overlay("Saved", 100, 100).unwrap();
+        let widget = app.add_widget(id, "before").unwrap();
+        app.save().unwrap();
+        let target = EditTarget {
+            overlay_id: id,
+            widget_id: widget,
+            field: "content".into(),
+        };
+        app.begin_edit(target.clone()).unwrap();
+        app.update_edit(&target, |overlay| {
+            overlay.set_widget_content(widget, "dirty")
+        })
+        .unwrap();
+        assert!(app.save_with_failure(SaveFailureStage::Write).is_err());
+        assert!(app.pending_edit_target().is_none());
+        assert!(app.is_dirty());
+        assert!(app.undo().unwrap());
+        assert_eq!(
+            app.overlay(id).unwrap().widget(widget).unwrap().content(),
+            "before"
+        );
+    }
+
+    #[test]
+    fn restart_revision_initialization() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("overlays.json");
+        let mut first = coordinator(&path);
+        let overlay_id = first.create_overlay("Saved", 100, 100).unwrap();
+        let widget_id = first.add_widget(overlay_id, "before").unwrap();
+        first.save().unwrap();
+        drop(first);
+        let mut restarted = coordinator(&path);
+        assert_eq!(restarted.hub().revision(overlay_id).unwrap(), Some(0));
+        restarted
+            .update_overlay(overlay_id, |overlay| {
+                overlay.set_widget_content(widget_id, "after")
+            })
+            .unwrap();
+        assert_eq!(restarted.hub().revision(overlay_id).unwrap(), Some(1));
+        assert!(restarted.undo().unwrap());
+        assert_eq!(restarted.hub().revision(overlay_id).unwrap(), Some(2));
+        assert_eq!(
+            restarted
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "before"
+        );
     }
 
     #[test]
