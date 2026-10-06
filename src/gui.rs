@@ -87,8 +87,26 @@ struct PreviewDrag {
 
 #[derive(Clone, Debug)]
 enum EditEvent {
+    Begin(EditTarget, bool),
     Change(EditTarget, EditValue),
     Finish(EditTarget, bool),
+}
+
+fn collect_numeric_edit_events(
+    response: &egui::Response,
+    target: EditTarget,
+    value: EditValue,
+    events: &mut Vec<EditEvent>,
+) {
+    if response.drag_started() {
+        events.push(EditEvent::Begin(target.clone(), true));
+    }
+    if response.changed() {
+        events.push(EditEvent::Change(target.clone(), value));
+    }
+    if response.drag_stopped() || response.lost_focus() {
+        events.push(EditEvent::Finish(target, false));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,6 +213,18 @@ impl ChikachikaApp {
 
     /// Renders one frame without requiring a native window.
     pub fn render(&mut self, context: &egui::Context) {
+        if let Some(coordinator) = self.coordinator.as_mut() {
+            let gesture_active =
+                self.transient.preview_drag.is_some() || self.transient.gesture_edit.is_some();
+            let cancel_gesture = gesture_active
+                && context
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            if cancel_gesture
+                && let Err(error) = cancel_active_gesture(coordinator, &mut self.transient)
+            {
+                self.transient.close_error = Some(error);
+            }
+        }
         if self.blocked.is_some() {
             self.render_blocked(context);
         } else if self.transient.close_prompt_open {
@@ -795,26 +825,8 @@ impl ChikachikaApp {
             deferred_actions.clear();
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
-        if cancel_gesture {
-            let target = transient.gesture_edit.clone().or_else(|| {
-                transient
-                    .preview_drag
-                    .map(|drag| edit_target(drag.overlay_id, drag.widget_id, "canvas_position"))
-            });
-            if let Some(target) = target {
-                match finish_edit(coordinator, &target, true) {
-                    Ok(()) => {
-                        transient.active_edit = None;
-                        transient.gesture_edit = None;
-                        transient.preview_drag = None;
-                        clear_inspector_state(transient);
-                        transient.inspector_target = coordinator
-                            .selected_overlay_id()
-                            .zip(coordinator.selected_widget_id());
-                    }
-                    Err(error) => transient.close_error = Some(error),
-                }
-            }
+        if cancel_gesture && let Err(error) = cancel_active_gesture(coordinator, transient) {
+            transient.close_error = Some(error);
         }
         deferred_actions.extend(shortcut_actions);
         render_close_prompt(context, transient, &mut deferred_actions);
@@ -1090,6 +1102,28 @@ fn finish_edit(
     .map_err(|error| error.to_string())
 }
 
+fn cancel_active_gesture(
+    coordinator: &mut HeadlessCoordinator,
+    transient: &mut TransientState,
+) -> Result<(), String> {
+    let target = transient.gesture_edit.clone().or_else(|| {
+        transient
+            .preview_drag
+            .map(|drag| edit_target(drag.overlay_id, drag.widget_id, "canvas_position"))
+    });
+    if let Some(target) = target {
+        finish_edit(coordinator, &target, true)?;
+        transient.active_edit = None;
+        transient.gesture_edit = None;
+        transient.preview_drag = None;
+        clear_inspector_state(transient);
+        transient.inspector_target = coordinator
+            .selected_overlay_id()
+            .zip(coordinator.selected_widget_id());
+    }
+    Ok(())
+}
+
 fn resolve_active_edit(
     coordinator: &mut HeadlessCoordinator,
     transient: &mut TransientState,
@@ -1169,6 +1203,148 @@ fn consume_shortcuts(
             && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
         (cancel_gesture, actions)
     })
+}
+
+fn render_inspector_color_control(
+    ui: &mut egui::Ui,
+    transient: &mut TransientState,
+    overlay_id: OverlayId,
+    widget_id: TextWidgetId,
+    color: &mut Color,
+    edit_events: &mut Vec<EditEvent>,
+) {
+    let popup_id = ui.make_persistent_id(("inspector-color-popup", overlay_id, widget_id));
+    let swatch_color = egui::Color32::from_rgba_unmultiplied(
+        color.red(),
+        color.green(),
+        color.blue(),
+        color.alpha(),
+    );
+    let swatch_size = ui.spacing().interact_size;
+    let (swatch_rect, _) = ui.allocate_exact_size(swatch_size, egui::Sense::hover());
+    let swatch = ui.interact(
+        swatch_rect,
+        ui.make_persistent_id(("inspector-color-swatch", overlay_id, widget_id)),
+        egui::Sense::click(),
+    );
+    ui.painter().rect_filled(swatch.rect, 2.0, swatch_color);
+    if swatch.clicked() {
+        ui.memory_mut(|memory| memory.toggle_popup(popup_id));
+    }
+    #[cfg(test)]
+    transient
+        .control_rects
+        .insert("Color".to_owned(), swatch.rect);
+
+    if ui.memory(|memory| memory.is_popup_open(popup_id)) {
+        let mut channel_values = [
+            color.red() as f32,
+            color.green() as f32,
+            color.blue() as f32,
+            color.alpha() as f32,
+        ];
+        let popup = egui::Area::new(popup_id)
+            .kind(egui::UiKind::Picker)
+            .order(egui::Order::Foreground)
+            .fixed_pos(swatch.rect.right_bottom())
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    for (index, (name, field)) in [
+                        ("R", "color_r"),
+                        ("G", "color_g"),
+                        ("B", "color_b"),
+                        ("A", "color_a"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        ui.push_id(
+                            ("inspector-color-field", overlay_id, widget_id, field),
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(name);
+                                    let slider = ui.add(
+                                        egui::Slider::new(&mut channel_values[index], 0.0..=255.0)
+                                            .show_value(false),
+                                    );
+                                    #[cfg(test)]
+                                    transient
+                                        .control_rects
+                                        .insert(format!("Color {name} slider"), slider.rect);
+                                    if slider.drag_started() {
+                                        edit_events.push(EditEvent::Begin(
+                                            edit_target(overlay_id, widget_id, "color"),
+                                            true,
+                                        ));
+                                    }
+                                    if slider.changed() {
+                                        *color = Color::rgba(
+                                            channel_values[0].round() as u8,
+                                            channel_values[1].round() as u8,
+                                            channel_values[2].round() as u8,
+                                            channel_values[3].round() as u8,
+                                        );
+                                        edit_events.push(EditEvent::Change(
+                                            edit_target(overlay_id, widget_id, "color"),
+                                            EditValue::Color(*color),
+                                        ));
+                                    }
+                                    if slider.drag_stopped() {
+                                        edit_events.push(EditEvent::Finish(
+                                            edit_target(overlay_id, widget_id, "color"),
+                                            false,
+                                        ));
+                                    }
+                                    let numeric = ui.add(
+                                        egui::DragValue::new(&mut channel_values[index])
+                                            .range(0.0..=255.0)
+                                            .speed(1.0),
+                                    );
+                                    #[cfg(test)]
+                                    transient
+                                        .control_rects
+                                        .insert(format!("Color {name}"), numeric.rect);
+                                    if numeric.has_focus() {
+                                        transient.text_editor_ids.push(numeric.id);
+                                        transient.focused_text_editor = Some(numeric.id);
+                                    }
+                                    if numeric.changed() {
+                                        *color = Color::rgba(
+                                            channel_values[0].round() as u8,
+                                            channel_values[1].round() as u8,
+                                            channel_values[2].round() as u8,
+                                            channel_values[3].round() as u8,
+                                        );
+                                        edit_events.push(EditEvent::Change(
+                                            edit_target(overlay_id, widget_id, "color"),
+                                            EditValue::Color(*color),
+                                        ));
+                                    }
+                                    if numeric.drag_started() {
+                                        edit_events.push(EditEvent::Begin(
+                                            edit_target(overlay_id, widget_id, "color"),
+                                            true,
+                                        ));
+                                    }
+                                    if numeric.drag_stopped() || numeric.lost_focus() {
+                                        edit_events.push(EditEvent::Finish(
+                                            edit_target(overlay_id, widget_id, "color"),
+                                            false,
+                                        ));
+                                    }
+                                });
+                            },
+                        );
+                    }
+                });
+            })
+            .response;
+        let escape_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        if escape_pressed || (!swatch.clicked() && popup.clicked_elsewhere()) {
+            ui.memory_mut(|memory| memory.close_popup());
+        }
+    }
 }
 
 fn render_widget_selector(
@@ -1434,6 +1610,8 @@ fn render_selected_widget_inspector(
                     FontFamily::JetBrainsMono.display_name(),
                 );
             });
+    });
+    ui.horizontal(|ui| {
         ui.label("Font size");
         let _font_size_response = ui
             .push_id(("font-size", overlay_id, values.id), |ui| {
@@ -1452,45 +1630,23 @@ fn render_selected_widget_inspector(
         if _font_size_response.has_focus() {
             transient.focused_text_editor = Some(_font_size_response.id);
         }
-        if _font_size_response.changed() {
-            edit_events.push(EditEvent::Change(
-                edit_target(overlay_id, values.id, "font_size"),
-                EditValue::FontSize(values.font_size),
-            ));
-        }
-        if _font_size_response.drag_stopped() || _font_size_response.lost_focus() {
-            edit_events.push(EditEvent::Finish(
-                edit_target(overlay_id, values.id, "font_size"),
-                false,
-            ));
-        }
+        collect_numeric_edit_events(
+            &_font_size_response,
+            edit_target(overlay_id, values.id, "font_size"),
+            EditValue::FontSize(values.font_size),
+            &mut edit_events,
+        );
     });
     ui.horizontal(|ui| {
         ui.label("Color");
-        let mut color = egui::Color32::from_rgba_unmultiplied(
-            values.color.red(),
-            values.color.green(),
-            values.color.blue(),
-            values.color.alpha(),
+        render_inspector_color_control(
+            ui,
+            transient,
+            overlay_id,
+            values.id,
+            &mut values.color,
+            &mut edit_events,
         );
-        let color_response = ui.color_edit_button_srgba(&mut color);
-        #[cfg(test)]
-        transient
-            .control_rects
-            .insert("Color".to_owned(), color_response.rect);
-        if color_response.changed() {
-            values.color = Color::rgba(color.r(), color.g(), color.b(), color.a());
-            edit_events.push(EditEvent::Change(
-                edit_target(overlay_id, values.id, "color"),
-                EditValue::Color(values.color),
-            ));
-        }
-        if color_response.drag_stopped() || color_response.lost_focus() {
-            edit_events.push(EditEvent::Finish(
-                edit_target(overlay_id, values.id, "color"),
-                false,
-            ));
-        }
         ui.label(format!(
             "RGBA({}, {}, {}, {})",
             values.color.red(),
@@ -1554,34 +1710,36 @@ fn render_selected_widget_inspector(
             x.clamp(0.0, canvas.width() as f32),
             y.clamp(0.0, canvas.height() as f32),
         );
-        if _x_response.changed() {
-            edit_events.push(EditEvent::Change(
-                edit_target(overlay_id, values.id, "position_x"),
-                EditValue::Position(Position::new(x, values.position.y())),
-            ));
-        }
-        if _x_response.drag_stopped() || _x_response.lost_focus() {
-            edit_events.push(EditEvent::Finish(
-                edit_target(overlay_id, values.id, "position_x"),
-                false,
-            ));
-        }
-        if _y_response.changed() {
-            edit_events.push(EditEvent::Change(
-                edit_target(overlay_id, values.id, "position_y"),
-                EditValue::Position(Position::new(values.position.x(), y)),
-            ));
-        }
-        if _y_response.drag_stopped() || _y_response.lost_focus() {
-            edit_events.push(EditEvent::Finish(
-                edit_target(overlay_id, values.id, "position_y"),
-                false,
-            ));
-        }
+        collect_numeric_edit_events(
+            &_x_response,
+            edit_target(overlay_id, values.id, "position_x"),
+            EditValue::Position(Position::new(x, values.position.y())),
+            &mut edit_events,
+        );
+        collect_numeric_edit_events(
+            &_y_response,
+            edit_target(overlay_id, values.id, "position_y"),
+            EditValue::Position(Position::new(values.position.x(), y)),
+            &mut edit_events,
+        );
     });
 
     for event in edit_events {
         match event {
+            EditEvent::Begin(target, is_gesture) => {
+                if transient.active_edit.as_ref() != Some(&target) {
+                    if let Err(error) = resolve_active_edit(coordinator, transient) {
+                        transient.close_error = Some(error);
+                        continue;
+                    }
+                    if let Err(error) = coordinator.begin_edit(target.clone()) {
+                        transient.close_error = Some(error.to_string());
+                        continue;
+                    }
+                    transient.active_edit = Some(target.clone());
+                }
+                transient.gesture_edit = is_gesture.then_some(target);
+            }
             EditEvent::Change(target, value) => {
                 if transient.active_edit.as_ref() != Some(&target) {
                     if let Err(error) = resolve_active_edit(coordinator, transient) {
@@ -1600,6 +1758,9 @@ fn render_selected_widget_inspector(
                         transient.close_error = Some(error);
                     } else {
                         transient.active_edit = None;
+                        if transient.gesture_edit.as_ref() == Some(&target) {
+                            transient.gesture_edit = None;
+                        }
                     }
                 }
             }
@@ -4846,22 +5007,10 @@ mod tests {
     }
 
     #[test]
-    fn grouped_numeric_and_color_gestures() {
+    fn color_slider_drag_updates_live_and_undoes_as_one_edit() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
         let (overlay_id, ids) = setup_widgets(&mut harness);
         harness.frame();
-        harness.replace_number_control("Font size", "42").unwrap();
-        harness.frame();
-        let widget = harness
-            .app()
-            .coordinator()
-            .unwrap()
-            .overlay(overlay_id)
-            .unwrap()
-            .widget(ids[0])
-            .unwrap();
-        assert_eq!(widget.font_size(), 42.0);
-        assert!(harness.app().coordinator().unwrap().can_undo());
         let before = harness
             .app()
             .coordinator()
@@ -4871,8 +5020,65 @@ mod tests {
             .widget(ids[0])
             .unwrap()
             .color();
+        let hub = harness.app().coordinator().unwrap().hub();
+        let initial_revision = hub.revision(overlay_id).unwrap().unwrap();
+
         harness.pointer_click_control("Color").unwrap();
         harness.frame();
+        let slider = harness.control_rect("Color R slider").unwrap();
+        let start = egui::pos2(slider.left() + slider.width() * 0.85, slider.center().y);
+        let first_move = egui::pos2(slider.left() + slider.width() * 0.65, slider.center().y);
+        let second_move = egui::pos2(slider.left() + slider.width() * 0.35, slider.center().y);
+        harness.pointer_move(start);
+        harness.pointer_button(start, true);
+        harness.pointer_move(first_move);
+        let after_first_move = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .color();
+        let first_revision = hub.revision(overlay_id).unwrap().unwrap();
+        assert_ne!(after_first_move, before);
+        assert!(first_revision > initial_revision);
+
+        harness.pointer_move(second_move);
+        let after_second_move = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .color();
+        assert_ne!(after_second_move, after_first_move);
+        assert!(hub.revision(overlay_id).unwrap().unwrap() > first_revision);
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .unwrap()
+                .field,
+            "color"
+        );
+
+        harness.pointer_button(second_move, false);
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
+        );
+        assert!(harness.app().coordinator().unwrap().can_undo());
+        assert!(harness.app_mut().coordinator_mut().unwrap().undo().unwrap());
         assert_eq!(
             harness
                 .app()
@@ -4885,7 +5091,174 @@ mod tests {
                 .color(),
             before
         );
-        assert!(harness.app().coordinator().unwrap().can_undo());
+    }
+
+    #[test]
+    fn color_channel_numeric_edit_is_one_undoable_change() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        let before = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .color();
+        harness.pointer_click_control("Color").unwrap();
+        harness.frame();
+        harness
+            .replace_number_control("Color R", "123")
+            .expect("edit red channel through egui input");
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .color()
+                .red(),
+            123
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
+        );
+        assert!(harness.app_mut().coordinator_mut().unwrap().undo().unwrap());
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .color(),
+            before
+        );
+    }
+
+    #[test]
+    fn numeric_drag_commits_on_release_and_cancels_with_escape() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        let before_size = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .font_size();
+        let size_rect = harness.control_rect("Font size").unwrap();
+        let size_start = size_rect.center();
+        let size_end = size_start - egui::vec2(20.0, 0.0);
+        harness.pointer_move(size_start);
+        harness.pointer_button(size_start, true);
+        harness.pointer_move(size_end);
+        let dragged_size = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .font_size();
+        assert_ne!(dragged_size, before_size);
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_some()
+        );
+        harness.pointer_button(size_end, false);
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
+        );
+        assert!(harness.app_mut().coordinator_mut().unwrap().undo().unwrap());
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .font_size(),
+            before_size
+        );
+
+        harness.frame();
+        let before_position = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .position();
+        let x_rect = harness.control_rect("Position X").unwrap();
+        let x_start = x_rect.center();
+        let x_end = x_start + egui::vec2(30.0, 0.0);
+        harness.pointer_move(x_start);
+        harness.pointer_button(x_start, true);
+        harness.pointer_move(x_end);
+        let dragged_position = harness
+            .app()
+            .coordinator()
+            .unwrap()
+            .overlay(overlay_id)
+            .unwrap()
+            .widget(ids[0])
+            .unwrap()
+            .position();
+        assert_ne!(dragged_position, before_position);
+        harness.key(egui::Key::Escape, true);
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .position(),
+            before_position
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
+        );
+        harness.pointer_button(x_end, false);
     }
 
     #[test]
