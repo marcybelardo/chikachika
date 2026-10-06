@@ -432,6 +432,9 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
         }
         self.redo.clear();
         self.undo.push(HistoryEntry { before, after });
+        self.enforce_history_capacity();
+    }
+    fn enforce_history_capacity(&mut self) {
         if self.undo.len() + self.redo.len() > HISTORY_CAPACITY {
             self.undo.remove(0);
         }
@@ -546,6 +549,7 @@ impl<H: HubOperations> HeadlessCoordinator<H> {
                 self.pending = None;
                 self.redo.clear();
                 self.redo.push(HistoryEntry { before, after });
+                self.enforce_history_capacity();
                 self.operation_error = None;
                 return Ok(true);
             }
@@ -1618,6 +1622,80 @@ mod tests {
     }
 
     #[test]
+    fn pending_undo_enforces_shared_history_capacity() {
+        let d = tempfile::tempdir().unwrap();
+        let mut initial = Overlay::with_dimensions("Saved", 100, 100).unwrap();
+        let widget_id = initial.add_widget("start").unwrap();
+        let overlay_id = initial.id();
+        let mut app = HeadlessCoordinator::from_overlays(
+            Store::at(d.path().join("overlays.json")),
+            vec![initial],
+        )
+        .unwrap();
+        for index in 0..100 {
+            app.rename_overlay(overlay_id, format!("name-{index}"))
+                .unwrap();
+        }
+        app.save().unwrap();
+        assert_eq!(app.undo.len(), 100);
+        assert!(app.redo.is_empty());
+
+        let target = EditTarget {
+            overlay_id,
+            widget_id,
+            field: "content".into(),
+        };
+        app.begin_edit(target.clone()).unwrap();
+        app.update_edit(&target, |overlay| {
+            overlay.set_widget_content(widget_id, "pending")
+        })
+        .unwrap();
+        assert!(app.undo().unwrap());
+
+        assert_eq!(app.undo.len(), 99);
+        assert_eq!(app.redo.len(), 1);
+        assert!(app.pending_edit_target().is_none());
+        assert_eq!(app.overlay(overlay_id).unwrap().name(), "name-99");
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "start"
+        );
+        assert!(!app.is_dirty());
+
+        assert!(app.redo().unwrap());
+        assert_eq!(app.overlay(overlay_id).unwrap().name(), "name-99");
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "pending"
+        );
+        assert!(app.is_dirty());
+
+        for _ in 0..100 {
+            assert!(app.undo().unwrap());
+        }
+        assert!(app.undo.is_empty());
+        assert_eq!(app.redo.len(), 100);
+        assert_eq!(app.overlay(overlay_id).unwrap().name(), "name-0");
+        assert_eq!(
+            app.overlay(overlay_id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "start"
+        );
+        assert!(app.is_dirty());
+    }
+
+    #[test]
     fn history_restore_failure_preserves_workspace() {
         let d = tempfile::tempdir().unwrap();
         let mut initial = Overlay::with_dimensions("Initial", 100, 100).unwrap();
@@ -1630,7 +1708,9 @@ mod tests {
             hub.clone(),
         )
         .unwrap();
-        app.rename_overlay(id, "Changed").unwrap();
+        for index in 0..100 {
+            app.rename_overlay(id, format!("Changed-{index}")).unwrap();
+        }
         let before = app.overlays().to_vec();
         let pending_target = EditTarget {
             overlay_id: id,
@@ -1647,12 +1727,24 @@ mod tests {
         assert!(app.undo().is_err());
         assert_eq!(app.pending_edit_target(), Some(&pending_target));
         assert_eq!(app.overlays().len(), before.len());
-        assert_eq!(hub.current(id).unwrap().name(), "Changed");
+        assert_eq!(hub.current(id).unwrap().name(), "Changed-99");
+        assert_eq!(
+            app.overlay(id)
+                .unwrap()
+                .widget(widget_id)
+                .unwrap()
+                .content(),
+            "pending"
+        );
+        assert_eq!(app.undo.len(), 100);
+        assert!(app.redo.is_empty());
         assert!(app.can_undo());
         assert!(!app.can_redo());
         assert!(app.undo().unwrap());
         assert_eq!(app.last_error(), None);
-        assert_eq!(app.overlay(id).unwrap().name(), "Changed");
+        assert_eq!(app.undo.len(), 99);
+        assert_eq!(app.redo.len(), 1);
+        assert_eq!(app.overlay(id).unwrap().name(), "Changed-99");
         assert_eq!(
             app.overlay(id)
                 .unwrap()
