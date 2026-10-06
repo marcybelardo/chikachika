@@ -339,23 +339,14 @@ impl ChikachikaApp {
         let quit_requested = context.input_mut(|input| {
             cfg!(target_os = "macos") && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Q)
         });
-        if close_requested || quit_requested {
-            if self.transient.allow_close {
-                self.transient.allow_close = false;
-            } else {
-                let coordinator = self
-                    .coordinator
-                    .as_mut()
-                    .expect("usable state has a coordinator");
-                if let Err(error) = request_close(context, coordinator, &mut self.transient) {
-                    self.transient.close_error = Some(error);
-                }
-                if self.transient.close_prompt_open {
-                    self.render_close_only(context);
-                    return;
-                }
-                return;
-            }
+        let close_triggered = close_requested || quit_requested;
+        if close_triggered {
+            let keep_focused_text = focused_text_editor(context).is_some();
+            context.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| keep_focused_text && matches!(event, egui::Event::Text(_)));
+            });
         }
         let style = context.style();
         let coordinator = self
@@ -789,10 +780,19 @@ impl ChikachikaApp {
         render_delete_dialog(context, coordinator, transient);
 
         let modal_open = transient.close_prompt_open;
+        if close_triggered && !modal_open {
+            if transient.allow_close {
+                transient.allow_close = false;
+            } else if let Err(error) = request_close(context, coordinator, transient) {
+                transient.close_error = Some(error);
+            }
+        }
+        let modal_open = transient.close_prompt_open;
         let (cancel_gesture, mut shortcut_actions) =
-            consume_shortcuts(context, transient, !modal_open);
+            consume_shortcuts(context, transient, !modal_open && !close_triggered);
         if modal_open {
             shortcut_actions.clear();
+            deferred_actions.clear();
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         if cancel_gesture {
@@ -814,13 +814,6 @@ impl ChikachikaApp {
                     }
                     Err(error) => transient.close_error = Some(error),
                 }
-            }
-        }
-        if close_requested && !modal_open {
-            if transient.allow_close {
-                transient.allow_close = false;
-            } else if let Err(error) = request_close(context, coordinator, transient) {
-                transient.close_error = Some(error);
             }
         }
         deferred_actions.extend(shortcut_actions);
@@ -2292,6 +2285,10 @@ fn render_settings(
     ui.horizontal(|ui| {
         ui.label("Port for next launch (1–65535)");
         let input = ui.text_edit_singleline(&mut transient.settings_port_input);
+        #[cfg(test)]
+        transient
+            .control_rects
+            .insert("Settings port".to_owned(), input.rect);
         transient.text_editor_ids.push(input.id);
         if input.has_focus() {
             transient.focused_text_editor = Some(input.id);
@@ -2429,6 +2426,10 @@ fn render_create_dialog(
         .show(context, |ui| {
             ui.label("Name");
             let name = ui.text_edit_singleline(&mut transient.create_name);
+            #[cfg(test)]
+            transient
+                .control_rects
+                .insert("Create name".to_owned(), name.rect);
             transient.text_editor_ids.push(name.id);
             if name.has_focus() {
                 transient.focused_text_editor = Some(name.id);
@@ -2479,6 +2480,10 @@ fn render_rename_dialog(
         .show(context, |ui| {
             ui.label(format!("Rename overlay {id}"));
             let name = ui.text_edit_singleline(&mut transient.rename_name);
+            #[cfg(test)]
+            transient
+                .control_rects
+                .insert("Rename name".to_owned(), name.rect);
             transient.text_editor_ids.push(name.id);
             if let Some(error) = transient.dialog_error.as_deref() {
                 ui.colored_label(egui::Color32::from_rgb(183, 28, 28), error);
@@ -2621,18 +2626,17 @@ impl ScenarioHarness {
     }
 
     fn frame_close_requested(&mut self) {
-        let mut input = self.raw_input(Vec::new());
+        self.frame_with_close(Vec::new());
+    }
+
+    fn frame_with_close(&mut self, events: Vec<egui::Event>) {
+        let mut input = self.raw_input(events);
         input
             .viewports
             .get_mut(&egui::ViewportId::ROOT)
             .unwrap()
             .events = vec![egui::ViewportEvent::Close];
-        let app = &mut self.app;
-        let output = self.context.run(input, |context| app.render(context));
-        self.last_viewport_commands = output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .clone();
-        self.last_shapes = output.shapes;
+        self.run_input(input);
     }
 
     fn emitted_close_commands(&self) -> &[egui::ViewportCommand] {
@@ -2650,6 +2654,10 @@ impl ScenarioHarness {
 
     fn frame_events(&mut self, events: Vec<egui::Event>) {
         let input = self.raw_input(events);
+        self.run_input(input);
+    }
+
+    fn run_input(&mut self, input: egui::RawInput) {
         #[cfg(test)]
         {
             self.app.transient.widget_selector_rects.clear();
@@ -3073,7 +3081,21 @@ mod tests {
     use crate::persistence::Store;
 
     fn ready_app() -> HeadlessCoordinator {
-        HeadlessCoordinator::empty(Store::at("test-overlays.json"))
+        use std::cell::RefCell;
+
+        thread_local! {
+            static TEST_STORE_DIRECTORY: RefCell<(tempfile::TempDir, usize)> = RefCell::new((
+                tempfile::tempdir().expect("test store directory"),
+                0,
+            ));
+        }
+        let path = TEST_STORE_DIRECTORY.with(|state| {
+            let mut state = state.borrow_mut();
+            let path = state.0.path().join(format!("overlays-{}.json", state.1));
+            state.1 += 1;
+            path
+        });
+        HeadlessCoordinator::empty(Store::at(path))
     }
 
     fn setup_widgets(harness: &mut ScenarioHarness) -> (OverlayId, Vec<TextWidgetId>) {
@@ -4867,12 +4889,46 @@ mod tests {
     }
 
     #[test]
+    fn quit_while_text_focused_resolves_pending_edit() {
+        let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
+        let (overlay_id, ids) = setup_widgets(&mut harness);
+        harness.frame();
+        harness.pointer_click_control("Widget content").unwrap();
+        harness.frame_with_close(vec![egui::Event::Text(" final".to_owned())]);
+
+        assert!(harness.app().transient.close_prompt_open);
+        assert_eq!(harness.close_prompt_count(), 1);
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .overlay(overlay_id)
+                .unwrap()
+                .widget(ids[0])
+                .unwrap()
+                .content()
+                .ends_with(" final")
+        );
+        assert!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .pending_edit_target()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn close_prompt_save_discard_cancel_matrix() {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
         let (_overlay_id, _ids) = setup_widgets(&mut harness);
         harness.frame();
         harness.click("Add").unwrap();
         harness.frame();
+        let name_rect = harness.control_rect("Widget name").unwrap();
+        let add_rect = harness.control_rect("Add text widget").unwrap();
         harness.frame_close_requested();
         assert!(harness.app().transient.close_prompt_open);
         assert!(
@@ -4891,8 +4947,7 @@ mod tests {
             .unwrap()
             .widgets()
             .to_vec();
-        let name_rect = harness.control_rect("Widget name").unwrap();
-        harness.pointer_click_control("Add text widget").unwrap();
+        harness.pointer_click(add_rect.center());
         assert_eq!(
             harness
                 .app()
@@ -4937,6 +4992,37 @@ mod tests {
         let mut harness = ScenarioHarness::new(BootstrapOutcome::Ready(ready_app()));
         let (overlay_id, ids) = setup_widgets(&mut harness);
         harness.frame();
+        let primary = if cfg!(target_os = "macos") {
+            egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL
+        };
+        harness.key_with_modifiers(egui::Key::D, true, primary);
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_overlay()
+                .unwrap()
+                .widgets()
+                .len(),
+            4
+        );
+        harness.key(egui::Key::Delete, true);
+        harness.frame();
+        assert_eq!(
+            harness
+                .app()
+                .coordinator()
+                .unwrap()
+                .selected_overlay()
+                .unwrap()
+                .widgets()
+                .len(),
+            3
+        );
         harness
             .replace_text_control("Widget content", "first\nsecond")
             .unwrap();
