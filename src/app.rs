@@ -1769,6 +1769,32 @@ mod tests {
     }
 
     #[test]
+    fn history_is_session_only() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("overlays.json");
+        let mut app = coordinator(&path);
+        let id = app.create_overlay("Saved", 100, 100).unwrap();
+        let widget = app.add_widget(id, "saved").unwrap();
+        app.save().unwrap();
+        app.update_overlay(id, |overlay| overlay.set_widget_content(widget, "changed"))
+            .unwrap();
+        assert!(app.can_undo());
+        drop(app);
+        let restarted = coordinator(&path);
+        assert!(!restarted.can_undo());
+        assert!(!restarted.can_redo());
+        assert_eq!(
+            restarted
+                .overlay(id)
+                .unwrap()
+                .widget(widget)
+                .unwrap()
+                .content(),
+            "saved"
+        );
+    }
+
+    #[test]
     fn restart_revision_initialization() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("overlays.json");
